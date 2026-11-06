@@ -29,7 +29,8 @@ an admin tool needs underneath, done right per dialect.
 - Claims of conformance to the SQL standard. Wherewith follows what the
   three databases actually do, as their manuals describe and, later,
   as tests against the real engines show.
-- Other databases, for now (SQL Server, Oracle, DuckDB, and others).
+- Other databases, for now. SQL Server and DuckDB are planned next,
+  then Oracle and Db2.
 
 ## Model: a shared core plus profiles
 
@@ -76,7 +77,9 @@ Notes on each:
   `SQLITE_DBCONFIG_DQS_DDL`), and adapters should.
 - **PostgreSQL** with `standard_conforming_strings` off reads `\'` in
   a plain string as an escaped quote, which would make quoting unsafe.
-  Wherewith assumes it's on, as it has been by default since 9.1.
+  Wherewith assumes it's on, as it has been by default since 9.1, and
+  doesn't also reject backslashes; adapters can check it with `SHOW
+  standard_conforming_strings`.
 - **MySQL and MariaDB:** the `mysql` profile doubles `'` and escapes
   `\`, NUL, and Ctrl-Z with a backslash. In the default mode that reads
   back exactly; under `NO_BACKSLASH_ESCAPES` the string still ends in
@@ -105,7 +108,13 @@ Done:
   (SQL text), `QueryParam` (a `SqlValue`: `SqlText`, `SqlInt`,
   `SqlFloat`, `SqlBool`, or `SqlNull`), and `QueryName` (an
   `Identifier`). A nested query's parts go in place, so parameters
-  number straight through. `params` lists the values in order.
+  number straight through. `params` lists the values in order. Its
+  constructor is private: queries come from a `QueryBuilder` or a tag,
+  which check their text, or from `Query.unchecked(parts)`, which skips
+  every check and is named so it's plainly unsafe for untrusted text.
+  Temper's private constructors are still public in some backends, a
+  known limitation, so `new Query(parts)` may be callable there, with
+  the same danger.
 - `Query.render(dialect, style)` gives a `RenderedQuery`, with `sql`
   and `params`: names quoted for the dialect, and each parameter
   written in a `PlaceholderStyle`, chosen at render time: `question`
@@ -154,27 +163,55 @@ driver, not only the database, so the style is chosen when rendering:
 | Language | SQLite | PostgreSQL | MySQL and MariaDB |
 | --- | --- | --- | --- |
 | C++ | `sqlite3`: `?` | `libpq`: `$1` | Connector/C: `?` |
-| C# | `Microsoft.Data.Sqlite`: `@p1` (to verify) | Npgsql: `$1` or `@p1` (to verify) | MySqlConnector: `?` or `@p1` (to verify) |
+| C# | `Microsoft.Data.Sqlite`: `@p1` or `:p1` (no `?`) | Npgsql: `$1` (recommended), or `@p1` | MySqlConnector: `?` or `@p1` |
 | Java | JDBC: `?` | JDBC: `?` | JDBC: `?` |
-| JavaScript | `node:sqlite`, `better-sqlite3`: `?` | `pg`: `$1` | `mysql2`: `?` (to verify) |
-| Lua | `lsqlite3`: `?` (to verify) | LuaSQL: none, quoting only (to verify) | LuaSQL: none, quoting only (to verify) |
-| Python | `sqlite3`: `?` | psycopg: `%s` (to verify); asyncpg: `$1` | PyMySQL, mysqlclient: `%s` (to verify); MariaDB Connector: `?` (to verify) |
+| JavaScript | `node:sqlite`, `better-sqlite3`: `?` | `pg`: `$1` | `mysql2`: `?` |
+| Lua | `lsqlite3`: `?` | LuaSQL: none, quoting only | LuaSQL: none, quoting only |
+| Python | `sqlite3`: `?` | psycopg 3: `%s`; asyncpg: `$1` | PyMySQL, mysqlclient: `%s`; MariaDB Connector: `?` |
 | Rust | `rusqlite`: `?` | `tokio-postgres`, `sqlx`: `$1` | `mysql`, `sqlx`: `?` |
 
-All of these are from memory of the drivers' docs, not yet checked
-against them; "to verify" marks the least certain, and the
-differential tests should confirm every one. More to check:
+Checked against each driver's docs or source (2026-11):
+`Microsoft.Data.Sqlite`'s [parameters](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/parameters)
+and [`SqliteParameter.Bind`](https://github.com/dotnet/efcore/blob/main/src/Microsoft.Data.Sqlite.Core/SqliteParameter.cs);
+Npgsql's [basic usage](https://www.npgsql.org/doc/basic-usage.html)
+and [SQL parser](https://github.com/npgsql/npgsql/blob/main/src/Npgsql/SqlQueryParser.cs);
+MySqlConnector's [SQL parser](https://github.com/mysql-net/MySqlConnector/blob/master/src/MySqlConnector/Core/SqlParser.cs);
+`mysql2`'s [prepared statements](https://sidorares.github.io/node-mysql2/docs/documentation/prepared-statements);
+`lsqlite3`'s [`bind_values`](https://github.com/LuaDist/lsqlite3/blob/master/lsqlite3.c)
+(an older copy of the source; [its site](http://lua.sqlite.org/) was
+unreachable); LuaSQL's [manual](https://lunarmodules.github.io/luasql/manual.html);
+psycopg's [query conversion](https://github.com/psycopg/psycopg/blob/master/psycopg/psycopg/_queries.py);
+PyMySQL's [cursors](https://github.com/PyMySQL/PyMySQL/blob/main/pymysql/cursors.py);
+mysqlclient's [cursors](https://github.com/PyMySQL/mysqlclient/blob/main/src/MySQLdb/cursors.py);
+and MariaDB Connector/Python's [module](https://mariadb.com/docs/connectors/mariadb-connector-python/api/module).
+The rest are from memory of the drivers' docs, and the differential
+tests should confirm every one. Details:
 
-- `%s` drivers (psycopg, PyMySQL, and mysqlclient) skip `%` formatting
-  when the parameters are `None`, so an adapter must always pass a
-  list, even an empty one (to verify, especially psycopg 3 with an
-  empty list). Some fill in values on the client, so `-%s` with `-1`
-  would be `--1`, a comment; rendering's spaces around holes prevent
-  that.
-- Named styles: SQLite reads `@p1` and `:p1` itself. Npgsql rewrites
-  `@name` to `$1` by scanning the text (to verify), so a PostgreSQL
-  query with `@` operators fails `atNamed`; use `dollarNumbered`.
-- SQL Server and Oracle (`@p1` and `:p1`) aren't dialects yet.
+- `%s` drivers (psycopg 3, PyMySQL, and mysqlclient) skip `%`
+  formatting when the parameters are `None`, leaving `%%` as it is, but
+  apply it to an empty list, turning `%%` into `%`. So an adapter must
+  always pass a list, even an empty one. psycopg 3 turns `%s` into `$1`
+  for the server (except its `ClientCursor`); PyMySQL and mysqlclient
+  fill in values on the client, so `-%s` with `-1` would be `--1`, a
+  comment, and rendering's spaces around holes prevent that.
+- `Microsoft.Data.Sqlite` binds only by name (`@`, `:`, or `$`), and
+  an unnamed `?` is an error, so use `atNamed` or `colonNamed`.
+- Npgsql sends `$1` text unchanged when its parameters have no names.
+  With named ones, it rewrites `@name` and `:name` to `$1` by scanning
+  the text (skipping quotes, comments, and dollar quotes, and leaving
+  names it doesn't know), so `atNamed` works too; a query with `@`
+  in its text fails `atNamed`, though, so use `dollarNumbered`.
+- MySqlConnector reads `?` by position, or `@name` and `?name` by name,
+  skipping quotes and comments; MySQL's own `@a` variables then need
+  its `AllowUserVariables` option, and fail `atNamed` here.
+- `mysql2` reads `?`, and with `query` (not `execute`) also `??` for a
+  name, filled in on the client; the lexers reject `?` in template
+  text, so a query never has `??`.
+- `lsqlite3`'s `bind_values` binds `?` by position.
+- MariaDB Connector/Python's style is `?` (`qmark`), and it also takes
+  `%s`, but not both in one query.
+- SQL Server's (`@p1`) and Oracle's (`:p1`) styles are already here,
+  for when those dialects come.
 - Where a driver has no parameters (LuaSQL), quoting is the fallback,
   which is why `quoteString` exists.
 
@@ -238,21 +275,33 @@ Each has a recommendation, but stays open until decided.
 2. **NUL in SQLite strings:** reject (now), or write an expression
    such as `'a'||char(0)||'b'` where an expression is allowed?
    Recommended: keep rejecting; bind such values as parameters.
-3. **PostgreSQL with `standard_conforming_strings` off:** assume on
-   (now), or also reject strings with backslashes, safe either way?
-   Recommended: assume on, and document it.
-4. **Empty names:** rejected everywhere now, though SQLite accepts
+3. **Empty names:** rejected everywhere now, though SQLite accepts
    `""`. Keep that? Recommended: keep rejecting them everywhere.
-5. **MariaDB:** share the MySQL profiles (now), or get its own, for
+4. **MariaDB:** share the MySQL profiles (now), or get its own, for
    differences such as its `SQL_MODE=ORACLE`? Recommended: share them
    until a real difference matters.
-6. **Template mistakes:** panic when the tag is used (now), or make
+5. **Template mistakes:** panic when the tag is used (now), or make
    every template bubble, which Rust would see as a `Result`?
    Recommended: templates panic, and the builder bubbles.
-7. **Placeholder styles:** chosen when rendering, or fixed per
-   dialect? Decided: chosen at render time, since it depends on the
-   driver.
-8. **Whitelists:** which lists first, and how strict per dialect
+6. **Whitelists:** which lists first, and how strict per dialect
    (`ColumnType` differs the most)? Recommended: start with SQLite's
    column types, defaults, foreign-key actions, functions, and
    operators.
+
+## Decided
+
+- **Placeholder styles** are chosen at render time, not fixed per
+  dialect, since they depend on the driver.
+- **Raw queries:** `Query`'s constructor is private, and
+  `Query.unchecked(parts)` is the plainly named way to skip the checks.
+- **Named styles** fail if their marker is anywhere in the text, even
+  in quotes or comments, rather than lexing to find only real
+  placeholders: conservative, and the same for every driver.
+- **MySQL backslashes:** templates keep rejecting a backslash before a
+  quote or backslash in a string, since `NO_BACKSLASH_ESCAPES` reads it
+  differently.
+- **PostgreSQL** is assumed to have `standard_conforming_strings` on,
+  as documented above, with no extra rejection of backslashes.
+- **Spacing:** the space rendering adds beside a hole, as in `- ?`, is
+  fine, even where it isn't needed.
+- **More databases:** SQL Server and DuckDB next, then Oracle and Db2.

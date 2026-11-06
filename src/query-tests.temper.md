@@ -179,3 +179,52 @@ Values never appear in the SQL text, in any style or dialect.
       }
       assert(contains("abc", "bc"));
     }
+
+## Parts from holes
+
+Tags and the builder never make a hole into a `QueryText`: values
+become `QueryParam`s, names `QueryName`s, and a nested query keeps its
+own parts. Only `Query.unchecked` can put arbitrary text in a query.
+
+    let partKinds(q: Query): String {
+      let kinds = new ListBuilder<String>();
+      for (let p of q.parts) {
+        kinds.add(when (p) {
+          is QueryText -> if (contains(p.text, "zq")) { "LEAK" } else { "text" };
+          is QueryParam -> "param";
+          is QueryName -> "name";
+          else -> "other";
+        });
+      }
+      kinds.join(" ", fn (s: String): String { s })
+    }
+
+    test("holes never become text") {
+      let evil = "zq' OR 1=1 --";
+      let col = Identifier.named("zq") orelse panic();
+      let inner = postgres"${evil}";
+      let tagged = [
+        sqlite"SELECT ${col} WHERE a = ${evil} AND b = ${new SqlText(evil)}",
+        postgres"SELECT ${col} WHERE a = ${evil} AND b = ${new SqlText(evil)}",
+        mysql"SELECT ${col} WHERE a = ${evil} AND b = ${new SqlText(evil)}",
+      ];
+      for (let q of tagged) {
+        assert(partKinds(q) == "text name text param text param");
+      }
+      assert(partKinds(postgres"SELECT ${inner}, ${evil}") == "text param text param");
+      for (let d of allDialects()) {
+        let b = new QueryBuilder(d);
+        b.appendSafe("SELECT ");
+        b.appendIdentifier(col);
+        b.appendSafe(" WHERE a = ");
+        b.appendString(evil);
+        b.appendSafe(" AND b = ");
+        b.appendValue(new SqlText(evil));
+        b.appendSafe(", ");
+        b.appendQuery(inner);
+        assert(partKinds(b.build() orelse panic()) == "text name text param text param text param");
+      }
+      let raw = Query.unchecked([new QueryText("SELECT 'zq'")]);
+      assert(partKinds(raw) == "LEAK");
+      assert(raw.params.isEmpty);
+    }

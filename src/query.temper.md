@@ -33,14 +33,14 @@ in place, so its parameters are numbered with the rest.
 ## Query
 
 `params` lists the values in order, the same for every placeholder
-style. Making a `Query` from parts directly skips the builder's checks,
-so that's for code that checks its own text.
+style. Queries come from a `QueryBuilder` or a tag, which check their
+text; the constructor is private.
 
     export class Query {
       public parts: List<QueryPart>;
       public params: List<SqlValue>;
 
-      public constructor(parts: List<QueryPart>) {
+      private constructor(parts: List<QueryPart>) {
         let params = new ListBuilder<SqlValue>();
         // An index loop, since Temper's C++ backend drops the lambda's
         // declaration for a for-of loop in a constructor.
@@ -50,6 +50,20 @@ so that's for code that checks its own text.
         }
         this.parts = parts;
         this.params = params.toList();
+      }
+
+`unchecked` makes a query straight from its parts, skipping every
+check: each `QueryText` is written into the SQL as it is, so it must
+never hold untrusted text. It's for code that checks its own text, such
+as another builder that already lexes SQL. Use a `QueryBuilder` or a
+tag otherwise.
+
+Temper's private constructors still come out public in some backends
+(a known limitation, for now), so there `new Query(parts)` is callable
+too, with the same danger; use `unchecked`, which says so.
+
+      public static unchecked(parts: List<QueryPart>): Query {
+        new Query(parts)
       }
 
 ### Rendering
@@ -257,7 +271,7 @@ let q = b.build() orelse panic();
         }
         if (!lexer.inCode) { fail("template ends inside a quote or comment"); }
         if (problem != null) { bubble() }
-        new Query(parts.toList())
+        Query.unchecked(parts.toList())
       }
 
       public get accumulated(): Query { build() orelse panic() }
