@@ -199,6 +199,8 @@ mistake can't misplace a parameter:
 - The text can't have its own placeholders, such as `?` or `$1`, which
   would shift every parameter's place. Each dialect's file says what
   counts.
+- The text can't hold NUL. PostgreSQL and SQLite stop reading SQL
+  text there, and MySQL and MariaDB end a line comment there.
 - The text can't end inside a quote or a block comment. If it ends in
   a line comment, a line break ends that, so text after a nested query
   stays code.
@@ -292,6 +294,7 @@ let q = b.build() orelse panic();
         let text = pending.toString();
         pending = new StringBuilder();
         hasPending = false;
+        if (hasCodePoint(text, 0)) { fail("NUL in template text"); }
         let found = lexer.scan(text);
         if (found != null) { fail(found); }
         parts.add(new QueryText(text));
@@ -300,6 +303,7 @@ let q = b.build() orelse panic();
       private hole(): Boolean {
         flush();
         if (lexer.inCode) {
+          lexer.hole();
           true
         } else {
           fail("hole inside a quote or comment");
@@ -328,6 +332,11 @@ Whether the text so far ends where code goes, so a hole can go there.
 Whether it ends in a line comment.
 
       public get inLineComment(): Boolean;
+
+That a hole comes next, where code goes, so the text on either side
+of it can't join into one token.
+
+      public hole(): Void;
     }
 
     let newLexer(dialect: Dialect): SqlLexer {

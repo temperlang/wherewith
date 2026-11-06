@@ -25,8 +25,9 @@ A NUL can only be written where backslash escapes are read.
       assert(Dialect.mysql.stringProblem(u(0x0)) == null);
     }
 
-MySQL and MariaDB reject names above U+FFFF and names ending in a
-space.
+MySQL and MariaDB reject names above U+FFFF and names ending in any
+whitespace, and MariaDB reads table names starting with `#mysql50#` as
+file names.
 
     test("MySQL-only name rules") {
       assert(nam(Dialect.mysql, "t${u(0x1F600)}") == "(fails)");
@@ -35,7 +36,22 @@ space.
       assert(nam(Dialect.mysql, "t ") == "(fails)");
       assert(nam(Dialect.mysql, " t") == "` t`");
       assert(nam(Dialect.sqlite, "t ") == "\"t \"");
-      assert(Dialect.mysql.nameProblem("t ") == "name ends in a space");
+      assert(Dialect.mysql.nameProblem("t ") == "name ends in whitespace");
+      for (let c of [0x09, 0x0A, 0x0B, 0x0C, 0x0D]) {
+        assert(nam(Dialect.mysql, "t${u(c)}") == "(fails)");
+        assert(nam(Dialect.mysqlNoBackslashEscapes, "t${u(c)}") == "(fails)");
+        assert(nam(Dialect.postgres, "t${u(c)}") == "\"t${u(c)}\"");
+        assert(identifierProblem("t${u(c)}") == "name ends in whitespace");
+      }
+      // A name of only whitespace ends in it too.
+      assert(Dialect.mysql.nameProblem(" ${u(0x09)}${u(0x0A)}") == "name ends in whitespace");
+      assert(nam(Dialect.mysql, "${u(0x0D)} t") == "`${u(0x0D)} t`");
+      assert(nam(Dialect.mysql, "t${u(0x85)}") == "`t${u(0x85)}`");
+      assert(nam(Dialect.mysql, "t${u(0xA0)}") == "`t${u(0xA0)}`");
+      assert(Dialect.mysql.nameProblem("#mysql50#t") == "name starts with #mysql50#");
+      assert(nam(Dialect.mysql, "#mysql50") == "`#mysql50`");
+      assert(nam(Dialect.mysql, "t#mysql50#") == "`t#mysql50#`");
+      assert(nam(Dialect.sqlite, "#mysql50#t") == "\"#mysql50#t\"");
     }
 
 ## Queries
@@ -68,6 +84,11 @@ and executable comments.
       // `--` without a space is minus minus, unless a hole follows.
       assert(check { b => b.appendSafe("SELECT 5--1, "); b.appendInt(1); } == "ok");
       assert(check { b => b.appendSafe("SELECT 5--"); b.appendInt(1); } == inQuote);
+      // DEL is a control character too, but a line feed alone ends a
+      // comment.
+      assert(check { b => b.appendSafe("SELECT 5--${u(0x7F)}, "); b.appendInt(1); } == inQuote);
+      assert(check { b => b.appendSafe("SELECT 5--${u(0x80)}, "); b.appendInt(1); } == "ok");
+      assert(check { b => b.appendSafe("SELECT 1 # c\r, "); b.appendInt(1); } == inQuote);
       // Block comments don't nest.
       assert(check { b => b.appendSafe("SELECT /* /* */ "); b.appendInt(1); } == "ok");
       // Backslashes.
@@ -79,6 +100,16 @@ and executable comments.
       assert(check { b => b.appendSafe("SELECT /*! 1 */"); } == "executable comment in template text");
       assert(check { b => b.appendSafe("SELECT /*M! 1 */"); } == "executable comment in template text");
       assert(check { b => b.appendSafe("SELECT /*+ hint */ 1"); } == "ok");
+      // A hint's own scanner reads quoted names, which can hold `*/`.
+      let hintQuote = "quote in an optimizer hint";
+      assert(check { b => b.appendSafe("SELECT /*+ QB_NAME(`*/ "); b.appendInt(1); b.appendSafe("`) */"); } ==
+        hintQuote);
+      assert(check { b => b.appendSafe("SELECT /*+ SET_VAR(a='b') */ 1"); } == hintQuote);
+      assert(check { b => b.appendSafe("SELECT /*+ x \"y\" */ 1"); } == hintQuote);
+      assert(check { b => b.appendSafe("SELECT /* x `y` */ 1"); } == "ok");
+      // NUL ends a line comment, so it can't be in template text.
+      assert(check { b => b.appendSafe("SELECT 1 # ${u(0)}\n, "); b.appendInt(1); } == "NUL in template text");
+      assert(check { b => b.appendSafe("SELECT '${u(0)}'"); } == "NUL in template text");
       // Stray placeholders.
       assert(check { b => b.appendSafe("SELECT ?"); } == "parameter in template text");
       assert(check { b => b.appendSafe("SELECT a$b"); } == "parameter in template text");

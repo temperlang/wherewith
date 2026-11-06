@@ -8,7 +8,11 @@ which works whether or not `ANSI_QUOTES` is on, and strings in `'…'`
 with `'` doubled. MariaDB shares these profiles.
 
 MySQL and MariaDB limit most names to 64 characters, within the Basic
-Multilingual Plane, and not ending in a space.
+Multilingual Plane, and not ending in whitespace: the servers reject a
+name ending in a space, tab, line feed, vertical tab, form feed, or
+carriage return. MariaDB also reads a database or table name starting
+with `#mysql50#` as a file name, which could be another table's, so
+the profiles reject that prefix.
 
 The default profile, `Dialect.mysql`, works in every SQL mode: strings
 escape `\`, NUL, and Ctrl-Z with a backslash, which reads back exactly
@@ -73,11 +77,15 @@ What `QueryBuilder` checks for MySQL and MariaDB, in every SQL mode:
   server runs with `NO_BACKSLASH_ESCAPES`. Where the string ends only
   differs when a backslash comes before its quote or another
   backslash, so those are mistakes; bind such text as a parameter.
-- Comments: `#` and `-- ` to the end of the line, and `/* */`, not
-  nested. `--` is only a comment before a space or control character,
-  so `5--1` is `5 - -1`; but `--` just before a hole is a mistake,
-  since rendering adds a space there. Executable comments (`/*!` and
+- Comments: `#` and `-- ` to the end of the line (a line feed only),
+  and `/* */`, not nested. `--` is only a comment before a space or
+  control character (code points up to U+0020, and U+007F), so `5--1`
+  is `5 - -1`; but `--` just before a hole is a mistake, since
+  rendering adds a space there. Executable comments (`/*!` and
   MariaDB's `/*M!`) run their text as SQL, so they're mistakes too.
+- Optimizer hints (`/*+ … */`, MySQL's and MariaDB 12's) are read by
+  their own scanner, where a quoted name can hold `*/`, so quotes of
+  any kind in a hint are mistakes.
 - Placeholders: `?`, so `?` can't be in the text outside quotes and
   comments, and neither can `$`, so `$1` can't look like one; names
   with `$` need quoting. User variables (`@a`) and `:=` are fine.
@@ -86,6 +94,8 @@ The lexer keeps its state from one run of text to the next.
 
     class MysqlLexer extends SqlLexer {
       private var state: Int = lexCode;
+      // Whether the block comment is an optimizer hint.
+      private var hint: Boolean = false;
 
       public get inCode(): Boolean { state == lexCode }
       public get inLineComment(): Boolean { state == lexLineComment }
@@ -109,7 +119,7 @@ The lexer keeps its state from one run of text to the next.
               state = lexLineComment;
             } else if (c == char'-' && following == char'-') {
               let after = text.next(next);
-              if (after >= end || text[after] <= 0x20) {
+              if (after >= end || text[after] <= 0x20 || text[after] == 0x7F) {
                 state = lexLineComment;
               }
               i = next;
@@ -118,6 +128,7 @@ The lexer keeps its state from one run of text to the next.
               if (after < end && (text[after] == char'!' || hasAt(text, after, "M!"))) {
                 problem = problem ?? "executable comment in template text";
               }
+              hint = after < end && text[after] == char'+';
               state = lexBlockComment;
               i = next;
             } else if (c == char'?' || c == char'$') {
@@ -138,12 +149,16 @@ The lexer keeps its state from one run of text to the next.
             else -> if (c == char'*' && following == char'/') {
               state = lexCode;
               i = next;
+            } else if (hint && (c == char'\'' || c == char'"' || c == char'`')) {
+              problem = problem ?? "quote in an optimizer hint";
             };
           }
           i = text.next(i);
         }
         problem
       }
+
+      public hole(): Void {}
     }
 
     let backslashProblem = "backslash before a quote or backslash in a string";

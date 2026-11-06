@@ -46,11 +46,13 @@ UTF-8 bytes and code points, or 0 for none.
       private maxNameBytes: Int;
       private maxNameCodePoints: Int;
 
-Whether names may hold code points above U+FFFF, and may end in a
-space.
+Whether names may hold code points above U+FFFF, and whether MySQL's
+other name rules apply: no name ends in whitespace (a space, tab, line
+feed, vertical tab, form feed, or carriage return, all space characters
+to the server's `my_isspace`), or starts with `#mysql50#`.
 
       private nonBmpNames: Boolean;
-      private trailingSpaceNames: Boolean;
+      private mysqlNameRules: Boolean;
 
       private constructor(
         name: String,
@@ -59,7 +61,7 @@ space.
         maxNameBytes: Int,
         maxNameCodePoints: Int,
         nonBmpNames: Boolean,
-        trailingSpaceNames: Boolean,
+        mysqlNameRules: Boolean,
       ) {
         this.name = name;
         this.nameQuote = nameQuote;
@@ -67,7 +69,7 @@ space.
         this.maxNameBytes = maxNameBytes;
         this.maxNameCodePoints = maxNameCodePoints;
         this.nonBmpNames = nonBmpNames;
-        this.trailingSpaceNames = trailingSpaceNames;
+        this.mysqlNameRules = mysqlNameRules;
       }
 
       public toString(): String { name }
@@ -80,29 +82,29 @@ constructor; each database's file explains its profile.
 [SQLite](sqlite.temper.md): no backslash escapes and no limit on names.
 
       public static sqlite: Dialect = doPure {
-        new Dialect("sqlite", char'"', false, 0, 0, true, true)
+        new Dialect("sqlite", char'"', false, 0, 0, true, false)
       };
 
 [PostgreSQL](postgres.temper.md): names up to 63 bytes, and
 `standard_conforming_strings` assumed on.
 
       public static postgres: Dialect = doPure {
-        new Dialect("postgres", char'"', false, 63, 0, true, true)
+        new Dialect("postgres", char'"', false, 63, 0, true, false)
       };
 
 [MySQL and MariaDB](mysql.temper.md): names up to 64 characters, in
-the Basic Multilingual Plane, with no trailing space. The default
-profile works in every SQL mode.
+the Basic Multilingual Plane, not ending in whitespace, and not
+starting with `#mysql50#`. The default profile works in every SQL mode.
 
       public static mysql: Dialect = doPure {
-        new Dialect("mysql", char'`', true, 0, 64, false, false)
+        new Dialect("mysql", char'`', true, 0, 64, false, true)
       };
 
 Only for servers known to run with `NO_BACKSLASH_ESCAPES`. **It's
 unsafe on a server without that mode.**
 
       public static mysqlNoBackslashEscapes: Dialect = doPure {
-        new Dialect("mysqlNoBackslashEscapes", char'`', false, 0, 64, false, false)
+        new Dialect("mysqlNoBackslashEscapes", char'`', false, 0, 64, false, true)
       };
 
 ### Quoting names
@@ -141,7 +143,12 @@ surrogates (only possible in languages whose strings are UTF-16).
         if (maxNameCodePoints > 0 && codePoints > maxNameCodePoints) {
           return "name longer than ${maxNameCodePoints.toString()} characters";
         }
-        if (last == char' ' && !trailingSpaceNames) { return "name ends in a space"; }
+        if (mysqlNameRules) {
+          if (last == char' ' || (last >= 0x09 && last <= 0x0D)) { return "name ends in whitespace"; }
+          // MariaDB reads a database or table name with this prefix as
+          // a file name, so it could name the same table as another.
+          if (hasAt(name, String.begin, "#mysql50#")) { return "name starts with #mysql50#"; }
+        }
         null
       }
 
@@ -210,8 +217,9 @@ where nothing escapes it. Lone surrogates have no UTF-8 form.
 
 An *Identifier* is a name that's safe to quote in every dialect
 Wherewith knows, so it can go in any query: not empty, at most 63 UTF-8
-bytes and 64 characters, no NUL, nothing above U+FFFF, and no trailing
-space. In a template, it's written quoted, as SQL text.
+bytes and 64 characters, no NUL, nothing above U+FFFF, no trailing
+whitespace, and no `#mysql50#` prefix. In a template, it's written
+quoted, as SQL text.
 
     export class Identifier {
       public name: String;

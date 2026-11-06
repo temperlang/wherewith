@@ -20,6 +20,9 @@ comments.
       assert(check { b => b.appendSafe("SELECT '"); b.appendInt(1); b.appendSafe("'"); } == inQuote);
       assert(check { b => b.appendSafe("SELECT \"a"); b.appendInt(1); b.appendSafe("\""); } == inQuote);
       assert(check { b => b.appendSafe("SELECT 1 -- "); b.appendInt(1); } == inQuote);
+      // A carriage return ends a line comment, as a line feed does.
+      assert(check { b => b.appendSafe("SELECT 1 -- c\r, "); b.appendInt(1); } == "ok");
+      assert(check { b => b.appendSafe("SELECT 1 -- c\r'"); b.appendInt(1); b.appendSafe("'"); } == inQuote);
       // Block comments nest.
       assert(check { b => b.appendSafe("SELECT /* /* */ "); b.appendInt(1); b.appendSafe(" */"); } ==
         inQuote);
@@ -30,6 +33,17 @@ comments.
         inQuote);
       assert(check { b => b.appendSafe("SELECT e'a\\'', "); b.appendInt(1); } == "ok");
       assert(check { b => b.appendSafe("SELECT name'a\\' , "); b.appendInt(1); } == "ok");
+      // An E string goes on past a doubled quote, and past whitespace
+      // and line comments with a line break, but not past a hole.
+      assert(check { b => b.appendSafe("SELECT E'a''\\' , "); b.appendInt(1); b.appendSafe("'"); } == inQuote);
+      assert(check { b => b.appendSafe("SELECT E'a'\n '\\' , "); b.appendInt(1); b.appendSafe("'"); } ==
+        inQuote);
+      assert(check { b => b.appendSafe("SELECT E'a' -- c\r\n'\\' , "); b.appendInt(1); b.appendSafe("'"); } ==
+        inQuote);
+      assert(check { b => b.appendSafe("SELECT E'a' '\\', "); b.appendInt(1); } == "ok");
+      assert(check { b => b.appendSafe("SELECT 'a'\n'\\', "); b.appendInt(1); } == "ok");
+      assert(check { b => b.appendSafe("SELECT E'a'\n"); b.appendInt(1); b.appendSafe("\n'\\', "); b.appendInt(2); } ==
+        "ok");
       // Dollar quotes.
       assert(check { b => b.appendSafe("SELECT $$ it's ? $$, "); b.appendInt(1); } == "ok");
       assert(check { b => b.appendSafe("SELECT $fn$ $$ ' $fn$, "); b.appendInt(1); } == "ok");

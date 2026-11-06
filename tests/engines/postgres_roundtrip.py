@@ -218,6 +218,11 @@ class Postgres(rt.Engine):
              [(1, 2, 0, 3, " ? ", " $1 ")]),
             (tag("SELECT ", H(1), " IN (", H(1), ", ", H(2), "), ", H(text(None)), " IS NULL"), [(True, True)]),
             (tag("SELECT CASE WHEN ", H(True), " THEN ", H(text("y")), " ELSE ", H(text("n")), " END"), [("y",)]),
+            # A carriage return ends a line comment.
+            (tag("SELECT 1 -- c\r, ", H(2)), [(1, 2)]),
+            # An E string goes on past a doubled quote, and past
+            # whitespace and line comments with a line break.
+            (tag("SELECT E'a''b\\'c'\n -- x\r\n'd\\'', ", H(3)), [("a'b'cd'", 3)]),
         ]
 
     def random_comment(self, rng, body: str) -> str:
@@ -225,10 +230,11 @@ class Postgres(rt.Engine):
         if r < 0.25:
             # Block comments nest, so an unclosed `/*` inside makes the
             # rest a comment too, and the builder must see that.
-            return "/*" + body.replace("*/", "") + "*/"
+            return "/*" + rt.without(body, "*/") + "*/"
         if r < 0.5:
-            return "/*" + body.replace("*/", "").replace("/*", "") + "*/"
-        return "--" + body.replace("\n", "") + "\n"
+            return "/*" + rt.without(body, "*/", "/*") + "*/"
+        # A line feed or a carriage return ends a line comment.
+        return "--" + rt.without(body, "\n", "\r") + rng.choice(["\n", "\r", "\r\n"])
 
     def limits(self) -> None:
         d = self.dialect

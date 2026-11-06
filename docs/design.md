@@ -47,12 +47,12 @@ setting.
 | | SQLite | PostgreSQL | MySQL and MariaDB |
 | --- | --- | --- | --- |
 | Names | `"…"`, `""` | `"…"`, `""` | `` `…` ``, with `` ` `` doubled (works with or without `ANSI_QUOTES`) |
-| Name limits | none | 63 bytes, longer truncated (rejected here) | 64 characters, no NUL, nothing above U+FFFF, no trailing space |
+| Name limits | none | 63 bytes, longer truncated (rejected here) | 64 characters, no NUL, nothing above U+FFFF, no trailing whitespace, no `#mysql50#` prefix |
 | Strings | `'…'`, `''` | `'…'`, `''` | `'…'`, `''` |
 | Backslash in strings | plain | plain, with `standard_conforming_strings` on (the default since 9.1) | an escape, unless `NO_BACKSLASH_ESCAPES` |
 | NUL in strings | ends the SQL text: rejected | not allowed in text: rejected | `\0` (rejected under `NO_BACKSLASH_ESCAPES`) |
 | Other string forms | none | `E'…'`, `U&'…'`, `$$…$$` (never written) | `"…"` strings without `ANSI_QUOTES` (never written) |
-| Comments | `--`, `/* */` | `--`, `/* */` (nested) | `-- ` (with a space), `#`, `/* */` |
+| Comments | `--` (to `\n`), `/* */` | `--` (to `\n` or `\r`), `/* */` (nested) | `-- ` (with a space or control character), `#` (both to `\n`), `/* */` |
 | Parameters in SQL | `?`, `?1`, `:a`, `@a`, `$a` | `$1` (server side) | `?` (server side) |
 
 Sources: SQLite's [keywords and quoting](https://www.sqlite.org/lang_keywords.html),
@@ -142,8 +142,9 @@ Done:
   everywhere, `$` outside PostgreSQL's dollar quotes, and SQLite's `:a`
   and `@a`), text ending in a quote or block comment, a MySQL backslash
   before a quote or backslash in a string (read differently under
-  `NO_BACKSLASH_ESCAPES`), and MySQL executable comments. Each
-  dialect's file lists its rules.
+  `NO_BACKSLASH_ESCAPES`), MySQL executable comments, quotes in
+  MySQL optimizer hints (`/*+ … */`), and NUL anywhere in the text.
+  Each dialect's file lists its rules.
 
 Later, after a design pass:
 
@@ -303,8 +304,8 @@ tests below.
     matching profile; in the modes without backslash escapes it also
     checks that the default `mysql` profile's strings still end where
     Wherewith ends them, reading back with their escapes as text. It
-    expects names over 64 characters, above U+FFFF, or ending in a
-    space to be rejected, and its DOUBLE has no NaN, infinities, or
+    expects names over 64 characters, above U+FFFF, ending in
+    whitespace, or starting with `#mysql50#` to be rejected, and its DOUBLE has no NaN, infinities, or
     subnormals, so those aren't bound. Each runner records the
     server's own limits (truncated names, and how it treats NUL and
     long names). Without a server, they skip; CI passes

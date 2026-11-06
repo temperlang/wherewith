@@ -178,8 +178,9 @@ class Sqlite(rt.Engine):
 
     def random_comment(self, rng, body: str) -> str:
         if rng.random() < 0.5:
-            return "/*" + body.replace("*/", "") + "*/"
-        return "--" + body.replace("\n", "") + "\n"
+            return "/*" + rt.without(body, "*/") + "*/"
+        # SQLite ends a line comment only at a line feed.
+        return "--" + rt.without(body, "\n") + "\n"
 
     def random_alias(self, rng, names: list[str]) -> str:
         r = rng.random()

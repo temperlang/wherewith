@@ -66,6 +66,15 @@ def has_surrogate(s: str) -> bool:
     return any(0xD800 <= ord(c) <= 0xDFFF for c in s)
 
 
+def without(s: str, *marks: str) -> str:
+    """s with every mark removed, repeating until none is left, since
+    removing one can make another (as `**//` without `*/` is `*/`)."""
+    while any(m in s for m in marks):
+        for m in marks:
+            s = s.replace(m, "")
+    return s
+
+
 # Inputs
 
 
@@ -91,6 +100,8 @@ def hostile_strings(seed: int, fuzz: int) -> list[str]:
         # Near the name limits: 63 and 64 bytes, and 64 and 65 characters.
         "x" * 63, "x" * 64, "é" * 31 + "x", "é" * 32, "一" * 21,
         "一" * 22, "é" * 64, "é" * 65,
+        # MariaDB reads table names with this prefix as file names.
+        "#mysql50#t", "#mysql50#a@0020b", "a#mysql50#",
     ]
     # Every ASCII control character, alone and between text.
     for c in [*range(0x20), 0x7F]:

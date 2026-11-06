@@ -14,8 +14,8 @@ values bound with `%s` come back equal with the expected type, and
 nested queries, operators, and random templates give the expected rows.
 Inputs Wherewith rejects (lone surrogates in strings, and NUL under
 `NO_BACKSLASH_ESCAPES`; empty names, NUL, lone surrogates, names over
-64 characters or above U+FFFF, and names ending in a space) must be
-rejected.
+64 characters or above U+FFFF, names ending in whitespace, and names
+starting with `#mysql50#`) must be rejected.
 
 The default `mysql` profile is also checked in every mode, as the
 design claims it's safe in all: under `NO_BACKSLASH_ESCAPES` each
@@ -109,9 +109,12 @@ class Mariadb(rt.Engine):
     def nul_texts(self) -> list[str]:
         return [] if self.nbe else super().nul_texts()
 
+    # The server rejects names ending in any of its space characters
+    # (my_isspace), and reads table names starting with #mysql50# as
+    # file names.
     def rejects_name(self, n: str) -> bool:
         return (super().rejects_name(n) or len(n) > 64 or any(ord(c) > 0xFFFF for c in n)
-                or n.endswith(" "))
+                or n[-1:] in tuple(" \t\n\v\f\r") or n.startswith("#mysql50#"))
 
     # A table is a file, its name encoded with up to 5 bytes for each
     # character other than ASCII letters, digits, and `_`, and a file
@@ -210,6 +213,10 @@ class Mariadb(rt.Engine):
              [(1, 2, 0, 3, "it's")]),
             (tag("SELECT ", H(1), " IN (", H(1), ", ", H(2), "), ", H(None), " IS NULL"), [(1, 1)]),
             (tag("SELECT CASE WHEN ", H(True), " THEN ", H("y"), " ELSE ", H("n"), " END"), [("y",)]),
+            # `--` before DEL starts a comment, and only a line feed
+            # ends one, not a carriage return.
+            (tag("SELECT 5--\x7f x\n, ", H(1)), [(5, 1)]),
+            (tag("SELECT 1 # c\r, 2\n, ", H(3)), [(1, 3)]),
         ]
 
     def random_comment(self, rng, body: str) -> str:
@@ -219,10 +226,11 @@ class Mariadb(rt.Engine):
         r = rng.random()
         # The space after `/*` keeps it from being an executable comment.
         if r < 0.4:
-            return "/* " + body.replace("*/", "") + "*/"
+            return "/* " + rt.without(body, "*/") + "*/"
+        # Only a line feed ends a line comment.
         if r < 0.7:
-            return "-- " + body.replace("\n", "") + "\n"
-        return "#" + body.replace("\n", "") + "\n"
+            return "-- " + rt.without(body, "\n") + "\n"
+        return "#" + rt.without(body, "\n") + "\n"
 
     def limits(self) -> None:
         notes = []
@@ -231,7 +239,12 @@ class Mariadb(rt.Engine):
             ("65 characters", "x" * 65, True),
             ("above U+FFFF", "\U0001F600", True),
             ("a trailing space", "a ", True),
-            ("a trailing tab", "a\t", False),
+            ("a trailing tab", "a\t", True),
+            ("a trailing line feed", "a\n", True),
+            ("a trailing vertical tab", "a\v", True),
+            ("a trailing form feed", "a\f", True),
+            ("a trailing carriage return", "a\r", True),
+            ("a trailing U+00A0", "a\xa0", False),
         ]:
             if (self.dialect.name_problem(name) is not None) != wherewith_rejects:
                 rt.fail("limits", f"the profile {'accepts' if wherewith_rejects else 'rejects'} a name with {label}")
@@ -242,6 +255,15 @@ class Mariadb(rt.Engine):
                 notes.append(f"a column with {label} accepted")
             except Exception as err:  # noqa: BLE001
                 notes.append(f"a column with {label} rejected ({err.args[0] if err.args else err!r})")
+        # A table named with the #mysql50# prefix names a file.
+        try:
+            self.execute("CREATE TABLE `#mysql50#limits_u` (c INT)")
+            got = self.execute(
+                "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()")
+            self.execute("DROP TABLE `#mysql50#limits_u`")
+            notes.append(f"a #mysql50# table accepted, listed as {[r[0] for r in got]}")
+        except Exception as err:  # noqa: BLE001
+            notes.append(f"a #mysql50# table rejected ({err.args[0] if err.args else err!r})")
         rt.count("limits checked", len(notes))
         print("  limits: " + "; ".join(notes))
 

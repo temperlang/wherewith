@@ -61,8 +61,12 @@ What `QueryBuilder` checks for PostgreSQL:
 
 - Quotes: strings in `'…'`, names in `"…"`, and dollar quotes,
   `$$…$$` or `$tag$…$tag$`. An `E'…'` string also reads backslash
-  escapes, so `\'` doesn't end it.
-- Comments: `--` to the end of the line, and `/* */`, which nest.
+  escapes, so `\'` doesn't end it, and it goes on past a doubled
+  `''`, or past whitespace and line comments with a line break in
+  them and then another `'`, as in `E'a'` and `'\'b'` on the next
+  line: one string, `a'b`.
+- Comments: `--` to the end of the line, which a line feed or a
+  carriage return ends, and `/* */`, which nest.
 - Placeholders: `$1` on the server, and `?` for JDBC. So `?` can't be
   in the text outside quotes and comments (write JSON operators such
   as `?` and `?|` as functions, `jsonb_exists` and
@@ -75,6 +79,14 @@ The lexer keeps its state from one run of text to the next.
       private var state: Int = lexCode;
       private var depth: Int = 0;
       private var tag: String = "";
+      // The two code points before the current one, or -1 at the start
+      // or after a hole.
+      private var before: Int = -1;
+      private var beforeThat: Int = -1;
+      // Since an E string ended: -1 if it can't go on, 0 just after
+      // its quote, 1 after whitespace, and 2 once that whitespace (or
+      // a line comment) has a line break, so another quote goes on.
+      private var afterEscape: Int = -1;
 
       public get inCode(): Boolean { state == lexCode }
       public get inLineComment(): Boolean { state == lexLineComment }
@@ -83,17 +95,29 @@ The lexer keeps its state from one run of text to the next.
         var problem: String? = null;
         var i = String.begin;
         let end = text.end;
-        // The two code points before `c` in this run, or -1.
-        var before = -1;
-        var beforeThat = -1;
         while (i < end) {
           let start = i;
           let c = text[i];
           let next = text.next(i);
           let following = if (next < end) { text[next] } else { -1 };
+          if (state == lexCode && afterEscape >= 0 && !(c == char'-' && following == char'-')) {
+            // Flat conditions: Temper's C# backend drops the braces of
+            // an `if` alone in an `else if` branch, so a later `else`
+            // would bind to it.
+            let space = isPostgresSpace(c);
+            if (c == char'\n' || c == char'\r') {
+              afterEscape = 2;
+            } else if (space && afterEscape == 0) {
+              afterEscape = 1;
+            } else if (!space && (c != char'\'' || afterEscape == 1)) {
+              afterEscape = -1;
+            }
+          }
           when (state) {
             lexCode -> if (c == char'\'') {
-              let escapes = (before == char'E' || before == char'e') && !isWordChar(beforeThat);
+              let escapes = afterEscape >= 0 ||
+                ((before == char'E' || before == char'e') && !isWordChar(beforeThat));
+              afterEscape = -1;
               state = if (escapes) { lexEscapeString } else { lexSingleQuoted };
             } else if (c == char'"') {
               state = lexDoubleQuoted;
@@ -120,11 +144,15 @@ The lexer keeps its state from one run of text to the next.
             lexSingleQuoted -> if (c == char'\'') { state = lexCode; };
             lexEscapeString -> if (c == char'\'') {
               state = lexCode;
+              afterEscape = 0;
             } else if (c == char'\\' && next < end) {
               i = next;
             };
             lexDoubleQuoted -> if (c == char'"') { state = lexCode; };
-            lexLineComment -> if (c == char'\n') { state = lexCode; };
+            lexLineComment -> if (c == char'\n' || c == char'\r') {
+              state = lexCode;
+              if (afterEscape >= 0) { afterEscape = 2; }
+            };
             lexDollarQuoted -> if (c == char'$' && hasAt(text, i, tag)) {
               state = lexCode;
               // Skip to the tag's last `$`.
@@ -149,6 +177,19 @@ The lexer keeps its state from one run of text to the next.
         }
         problem
       }
+
+      public hole(): Void {
+        before = -1;
+        beforeThat = -1;
+        afterEscape = -1;
+      }
+    }
+
+PostgreSQL's whitespace: space, tab, line feed, carriage return, form
+feed, and vertical tab.
+
+    let isPostgresSpace(c: Int): Boolean {
+      c == char' ' || (c >= 0x09 && c <= 0x0D)
     }
 
 `dollarTagEnd` finds the `$` that ends a dollar quote's opening tag,
