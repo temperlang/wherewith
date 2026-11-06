@@ -1,12 +1,14 @@
-# Dialect Tests
+# Core Tests
 
-Quoting tests for each profile, most with hostile input: quotes and
+Quoting tests for every profile, most with hostile input: quotes and
 backslashes that try to end a string or name early, NUL, newlines,
 comment starts, characters above U+FFFF, lone surrogates, and very
-long text.
+long text. Tests for one database's rules are in its own tests file.
+
+## Test helpers
 
     let allDialects(): List<Dialect> {
-      [Dialect.sqlite, Dialect.postgresql, Dialect.mysql, Dialect.mysqlNoBackslashEscapes]
+      [Dialect.sqlite, Dialect.postgres, Dialect.mysql, Dialect.mysqlNoBackslashEscapes]
     }
 
     let str(d: Dialect, s: String): String { d.quoteString(s) orelse "(fails)" }
@@ -23,6 +25,18 @@ which Temper misreads before a later `${…}` in the same block.)
       sb.toString()
     }
 
+`paramText` describes a parameter, for tests.
+
+    let paramText(p: SqlValue): String {
+      when (p) {
+        is SqlText -> "text:${p.value}";
+        is SqlInt -> "int:${p.value.toString()}";
+        is SqlFloat -> "float:${p.value.toString()}";
+        is SqlBool -> "bool:${p.value.toString()}";
+        else -> "null";
+      }
+    }
+
 ## Strings
 
     test("strings double single quotes in every dialect") {
@@ -33,31 +47,6 @@ which Temper misreads before a later `${…}` in the same block.)
         assert(str(d, "'") == "''''");
         assert(str(d, "x'; DROP TABLE t; --") == "'x''; DROP TABLE t; --'");
       }
-    }
-
-Only the default MySQL profile escapes backslashes. Elsewhere they're
-plain characters, so a trailing `\` can't escape the closing quote.
-
-    test("backslashes per dialect") {
-      let input = "\\'; DROP TABLE t; -- \\";
-      assert(str(Dialect.sqlite, input) == "'\\''; DROP TABLE t; -- \\'");
-      assert(str(Dialect.postgresql, input) == "'\\''; DROP TABLE t; -- \\'");
-      assert(str(Dialect.mysqlNoBackslashEscapes, input) == "'\\''; DROP TABLE t; -- \\'");
-      assert(str(Dialect.mysql, input) == "'\\\\''; DROP TABLE t; -- \\\\'");
-      assert(str(Dialect.mysql, "\\") == "'\\\\'");
-      assert(str(Dialect.mysql, "a${u(0x1A)}b") == "'a\\Zb'");
-      assert(str(Dialect.sqlite, "a${u(0x1A)}b") == "'a${u(0x1A)}b'");
-    }
-
-A NUL can only be written where backslash escapes are read.
-
-    test("NUL in strings") {
-      assert(str(Dialect.sqlite, "a${u(0x0)}b") == "(fails)");
-      assert(str(Dialect.postgresql, "a${u(0x0)}b") == "(fails)");
-      assert(str(Dialect.mysqlNoBackslashEscapes, "a${u(0x0)}b") == "(fails)");
-      assert(str(Dialect.mysql, "a${u(0x0)}b") == "'a\\0b'");
-      assert(Dialect.sqlite.stringProblem(u(0x0)) == "NUL in string");
-      assert(Dialect.mysql.stringProblem(u(0x0)) == null);
     }
 
 Other characters need no escaping inside quotes: double quotes, back
@@ -89,7 +78,7 @@ quotes, comment starts, line breaks, and characters above U+FFFF.
       let long = input.toString();
       assert(str(Dialect.sqlite, long) == "'${forSqlite.toString()}'");
       assert(str(Dialect.mysql, long) == "'${forMysql.toString()}'");
-      assert(str(Dialect.postgresql, long) == "'${forSqlite.toString()}'");
+      assert(str(Dialect.postgres, long) == "'${forSqlite.toString()}'");
     }
 
 Lone surrogates exist only where strings are UTF-16 (C#, Java, and
@@ -116,7 +105,7 @@ won't build such a string, so the test checks only what it can.
 
     test("names double their quote") {
       assert(nam(Dialect.sqlite, "t") == "\"t\"");
-      assert(nam(Dialect.postgresql, "a\"b") == "\"a\"\"b\"");
+      assert(nam(Dialect.postgres, "a\"b") == "\"a\"\"b\"");
       assert(nam(Dialect.sqlite, "\"") == "\"\"\"\"");
       assert(nam(Dialect.sqlite, "a`b") == "\"a`b\"");
       assert(nam(Dialect.mysql, "t") == "`t`");
@@ -153,12 +142,12 @@ PostgreSQL counts UTF-8 bytes, up to 63; MySQL counts characters, up to
 
     test("name lengths") {
       let a63 = repeated("a", 63);
-      assert(nam(Dialect.postgresql, a63) == "\"${a63}\"");
-      assert(nam(Dialect.postgresql, "${a63}a") == "(fails)");
-      assert(Dialect.postgresql.nameProblem("${a63}a") == "name longer than 63 UTF-8 bytes");
+      assert(nam(Dialect.postgres, a63) == "\"${a63}\"");
+      assert(nam(Dialect.postgres, "${a63}a") == "(fails)");
+      assert(Dialect.postgres.nameProblem("${a63}a") == "name longer than 63 UTF-8 bytes");
       // é is 2 bytes in UTF-8.
-      assert(nam(Dialect.postgresql, repeated(u(0xE9), 31)) != "(fails)");
-      assert(nam(Dialect.postgresql, repeated(u(0xE9), 32)) == "(fails)");
+      assert(nam(Dialect.postgres, repeated(u(0xE9), 31)) != "(fails)");
+      assert(nam(Dialect.postgres, repeated(u(0xE9), 32)) == "(fails)");
       assert(nam(Dialect.mysql, repeated(u(0xE9), 64)) != "(fails)");
       assert(nam(Dialect.mysql, repeated(u(0xE9), 65)) == "(fails)");
       assert(Dialect.mysql.nameProblem(repeated("a", 65)) == "name longer than 64 characters");
@@ -169,18 +158,5 @@ PostgreSQL counts UTF-8 bytes, up to 63; MySQL counts characters, up to
         quoted.append("n\"\"");
       }
       assert(nam(Dialect.sqlite, input.toString()) == "\"${quoted.toString()}\"");
-      assert(nam(Dialect.postgresql, input.toString()) == "(fails)");
-    }
-
-MySQL and MariaDB reject names above U+FFFF and names ending in a
-space.
-
-    test("MySQL-only name rules") {
-      assert(nam(Dialect.mysql, "t${u(0x1F600)}") == "(fails)");
-      assert(nam(Dialect.sqlite, "t${u(0x1F600)}") == "\"t${u(0x1F600)}\"");
-      assert(nam(Dialect.postgresql, "t${u(0x1F600)}") == "\"t${u(0x1F600)}\"");
-      assert(nam(Dialect.mysql, "t ") == "(fails)");
-      assert(nam(Dialect.mysql, " t") == "` t`");
-      assert(nam(Dialect.sqlite, "t ") == "\"t \"");
-      assert(Dialect.mysql.nameProblem("t ") == "name ends in a space");
+      assert(nam(Dialect.postgres, input.toString()) == "(fails)");
     }

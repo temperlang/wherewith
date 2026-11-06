@@ -21,7 +21,7 @@ q.sql;    // SELECT id FROM students WHERE name = ?
 q.params; // [SqlText(name)]
 
 // Names are quoted as each database expects.
-Dialect.postgresql.quoteName("my \"table\""); // "my ""table"""
+Dialect.postgres.quoteName("my \"table\"");   // "my ""table"""
 Dialect.mysql.quoteName("my `table`");        // `my ``table```
 
 // Where SQL has to be text, strings are quoted per dialect too.
@@ -63,7 +63,9 @@ Or on all of them:
 
 CI runs the tests on every backend for pull requests and pushes to
 `main`, using Temper's nightly `dev` build. Source files in `src/` are
-literate Markdown, with tests next to the code they cover.
+literate Markdown: `core.temper.md` has what every dialect shares, and
+each database has its own file (`sqlite`, `postgres`, and `mysql`),
+with tests beside them in `-tests` files.
 
 ## License
 

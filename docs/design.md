@@ -95,7 +95,7 @@ since they have no UTF-8 form.
 
 Done:
 
-- `Dialect`, with profiles `Dialect.sqlite`, `Dialect.postgresql`,
+- `Dialect`, with profiles `Dialect.sqlite`, `Dialect.postgres`,
   `Dialect.mysql`, and `Dialect.mysqlNoBackslashEscapes` (private
   constructor). Methods: `quoteName` and `quoteString`, which bubble on
   bad input, and `nameProblem` and `stringProblem`, which say why.
@@ -109,10 +109,20 @@ Done:
   mistakes (a hole in quotes or a comment, `?` or `:a` in the text, or
   text ending in a quote) panic; `SqliteBuilder.build` bubbles instead.
 
-Planned:
+Next:
 
-- `postgresql` and `mysql` tags, each with its own query type, so one
-  dialect's query can't nest in another's.
+- A dialect-neutral query object, which tags and code both produce
+  through a public builder, rendered per dialect, with the placeholder
+  style chosen at render time, since it depends on the driver (see
+  below).
+
+Later, after a design pass:
+
+- A small statement model: `SELECT`, `INSERT`, `UPDATE`, and `DELETE`,
+  with `WHERE`, `ORDER BY`, and `LIMIT`.
+
+Also planned:
+
 - More value types: bytes, dates and times, and lists for `IN (…)`
   (one parameter each).
 - Whitelists, each a class with a private constructor, a fixed list,
@@ -145,6 +155,41 @@ named style. These are from the drivers' docs and need checking in the
 differential tests. Where a driver has no parameters (LuaSQL), quoting
 is the fallback, which is why `quoteString` exists.
 
+## Prior art and test oracles
+
+Other libraries already handle SQL per dialect. Wherewith uses them as
+checklists of rules and cases, and, in tests, as oracles: comparing
+our quoting with theirs on many inputs. Each needs the user's approval
+before tests use it as a package.
+
+- [SQLGlot](https://github.com/tobymao/sqlglot) (Python): a parser and
+  transpiler for about 30 dialects.
+- [SQLAlchemy](https://www.sqlalchemy.org/) (Python): its dialect
+  system, with each database's quoting and reserved words.
+- [sqlparser-rs](https://github.com/apache/datafusion-sqlparser-rs)
+  (Rust): a parser with a `Dialect` trait, used by Apache DataFusion.
+- [jOOQ](https://www.jooq.org/) (Java): `SQLDialect`, covering many
+  databases. Some dialects need a paid license, so borrow carefully.
+- [Knex](https://knexjs.org/) and [Kysely](https://kysely.dev/)
+  (JavaScript and TypeScript): query builders with per-dialect clients.
+- [Diesel](https://diesel.rs/) and
+  [SeaQuery](https://github.com/SeaQL/sea-query) (Rust): query
+  builders with per-database backends.
+- Quoting-only libraries: psycopg's
+  [`sql.Identifier`](https://www.psycopg.org/psycopg3/docs/api/sql.html),
+  [pg-format](https://github.com/datalanche/node-pg-format), and
+  [sqlstring](https://github.com/mysqljs/sqlstring).
+
+Most are MIT or Apache licensed, so small borrowings, with credit in
+`NOTICE`, are fine. SQLite's source is in the public domain, and its
+tokenizer and keyword list are the authoritative spec for the SQLite
+profile.
+
+The shared core stays the strict common form: Wherewith never relies
+on SQLite's leniency, such as `"text"` read as a string or `[names]`
+in brackets. SQLite is the first real engine for the differential
+tests below.
+
 ## Testing
 
 - **Unit tests in Temper**, next to the code, run on every backend:
@@ -162,19 +207,28 @@ is the fallback, which is why `quoteString` exists.
 
 ## Open questions
 
-1. **Tag names:** `sqlite`, `postgresql`, and `mysql`, or names that
+Each has a recommendation, but stays open until decided.
+
+1. **Tag names:** `sqlite`, `postgres`, and `mysql`, or names that
    can't clash with other libraries' tags, such as `sqliteQuery`?
+   Recommended: the plain names `sqlite`, `postgres`, and `mysql`.
 2. **NUL in SQLite strings:** reject (now), or write an expression
    such as `'a'||char(0)||'b'` where an expression is allowed?
+   Recommended: keep rejecting; bind such values as parameters.
 3. **PostgreSQL with `standard_conforming_strings` off:** assume on
    (now), or also reject strings with backslashes, safe either way?
+   Recommended: assume on, and document it.
 4. **Empty names:** rejected everywhere now, though SQLite accepts
-   `""`. Keep that?
+   `""`. Keep that? Recommended: keep rejecting them everywhere.
 5. **MariaDB:** share the MySQL profiles (now), or get its own, for
-   differences such as its `SQL_MODE=ORACLE`?
+   differences such as its `SQL_MODE=ORACLE`? Recommended: share them
+   until a real difference matters.
 6. **Template mistakes:** panic when the tag is used (now), or make
    every template bubble, which Rust would see as a `Result`?
+   Recommended: templates panic, and the builder bubbles.
 7. **Placeholder styles:** chosen when rendering (planned), or fixed
-   per dialect?
+   per dialect? Recommended: chosen at render time.
 8. **Whitelists:** which lists first, and how strict per dialect
-   (`ColumnType` differs the most)?
+   (`ColumnType` differs the most)? Recommended: start with SQLite's
+   column types, defaults, foreign-key actions, functions, and
+   operators.

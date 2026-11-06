@@ -1,4 +1,12 @@
-# Dialects
+# Core
+
+What every dialect shares: the `Dialect` class with its quoting rules,
+names that are safe in every dialect, and the values queries bind as
+parameters. Each database's own rules and query tag are in its file:
+[SQLite](sqlite.temper.md), [PostgreSQL](postgres.temper.md), and
+[MySQL and MariaDB](mysql.temper.md).
+
+## Dialects
 
 A *Dialect* is a profile of one database's SQL text rules. Each starts
 from the core the three databases share, and overrides only where its
@@ -62,44 +70,40 @@ space.
 
       public toString(): String { name }
 
-## Profiles
+### Profiles
 
-SQLite has no backslash escapes and no limit on names.
+The profiles are here, since only the class can call its private
+constructor; each database's file explains its profile.
+
+[SQLite](sqlite.temper.md): no backslash escapes and no limit on names.
 
       public static sqlite: Dialect = doPure {
         new Dialect("sqlite", char'"', false, 0, 0, true, true)
       };
 
-PostgreSQL truncates names longer than 63 bytes, so two long names
-could become the same one; Wherewith rejects them instead. The profile
-assumes `standard_conforming_strings` is on, the default since
-PostgreSQL 9.1, so backslashes in strings are plain characters.
-Wherewith never writes `E'…'` strings.
+[PostgreSQL](postgres.temper.md): names up to 63 bytes, and
+`standard_conforming_strings` assumed on.
 
-      public static postgresql: Dialect = doPure {
-        new Dialect("postgresql", char'"', false, 63, 0, true, true)
+      public static postgres: Dialect = doPure {
+        new Dialect("postgres", char'"', false, 63, 0, true, true)
       };
 
-MySQL and MariaDB limit most names to 64 characters, within the Basic
-Multilingual Plane, and not ending in a space. The default profile
-works in every SQL mode: strings escape backslashes, which reads back
-exactly in the default mode, and only reads back with extra
-backslashes under `NO_BACKSLASH_ESCAPES`, never unsafely.
+[MySQL and MariaDB](mysql.temper.md): names up to 64 characters, in
+the Basic Multilingual Plane, with no trailing space. The default
+profile works in every SQL mode.
 
       public static mysql: Dialect = doPure {
         new Dialect("mysql", char'`', true, 0, 64, false, false)
       };
 
-For servers known to run with `NO_BACKSLASH_ESCAPES`, this profile
-leaves backslashes alone, so they read back exactly. **It's unsafe on a
-server without that mode**, where a value ending in `\` would escape
-the closing quote.
+Only for servers known to run with `NO_BACKSLASH_ESCAPES`. **It's
+unsafe on a server without that mode.**
 
       public static mysqlNoBackslashEscapes: Dialect = doPure {
         new Dialect("mysqlNoBackslashEscapes", char'`', false, 0, 64, false, false)
       };
 
-## Names
+### Quoting names
 
 `quoteName` quotes a name (an identifier: a table, a column, or other
 object), or bubbles if `nameProblem` finds one. One name at a time:
@@ -139,7 +143,7 @@ surrogates (only possible in languages whose strings are UTF-16).
         null
       }
 
-## Strings
+### Quoting strings
 
 `quoteString` quotes text as a string literal, or bubbles if
 `stringProblem` finds one. Prefer binding values as parameters; this is
@@ -199,6 +203,47 @@ where nothing escapes it. Lone surrogates have no UTF-8 form.
         null
       }
     }
+
+## Names in every dialect
+
+An *Identifier* is a name that's safe to quote in every dialect
+Wherewith knows, so it can go in any query: not empty, at most 63 UTF-8
+bytes and 64 characters, no NUL, nothing above U+FFFF, and no trailing
+space. In a template, it's written quoted, as SQL text.
+
+    export class Identifier {
+      public name: String;
+
+      private constructor(name: String) {
+        this.name = name;
+      }
+
+      public toString(): String { name }
+
+      public static named(name: String): Identifier throws Bubble {
+        if (identifierProblem(name) != null) { bubble() }
+        new Identifier(name)
+      }
+    }
+
+`identifierProblem` gives the first problem any dialect finds, or null.
+
+    export let identifierProblem(name: String): String? {
+      Dialect.postgres.nameProblem(name) ?? Dialect.mysql.nameProblem(name)
+    }
+
+## Values
+
+A *SqlValue* is a parameter's value, typed so each driver can bind it
+with its own type.
+
+    export sealed interface SqlValue {}
+
+    export class SqlText(public value: String) extends SqlValue {}
+    export class SqlInt(public value: Int64) extends SqlValue {}
+    export class SqlFloat(public value: Float64) extends SqlValue {}
+    export class SqlBool(public value: Boolean) extends SqlValue {}
+    export class SqlNull() extends SqlValue {}
 
 ## Helpers
 
