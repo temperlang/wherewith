@@ -69,8 +69,15 @@ Or on all of them:
 
     temper test -b cpp -b csharp -b java -b js -b lua -b py -b rust
 
+Round trips through a real SQLite engine use the Python library and
+only Python's standard library:
+
+    temper build -b py
+    uv run tests/engines/sqlite_roundtrip.py
+
 CI runs the tests on every backend for pull requests and pushes to
-`main`, using Temper's nightly `dev` build. Source files in `src/` are
+`main`, using Temper's nightly `dev` build, and the SQLite round trips
+with Python 3.11. Source files in `src/` are
 literate Markdown: `core.temper.md` has what every dialect shares,
 `query.temper.md` the dialect-neutral query and its builder, and each
 database has its own file (`sqlite`, `postgres`, and `mysql`) with its

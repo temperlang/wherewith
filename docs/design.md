@@ -74,7 +74,10 @@ Notes on each:
 - **SQLite** accepts a `"…"` that names no column as a string, for
   compatibility. A quoted name with a typo then reads as text instead
   of failing. Drivers can turn that off (`SQLITE_DBCONFIG_DQS_DML` and
-  `SQLITE_DBCONFIG_DQS_DDL`), and adapters should.
+  `SQLITE_DBCONFIG_DQS_DDL`), and adapters should. SQLite also
+  reserves table, index, view, and trigger names starting with
+  `sqlite_`, in any case and however they're quoted; columns may use
+  them.
 - **PostgreSQL** with `standard_conforming_strings` off reads `\'` in
   a plain string as an escaped quote, which would make quoting unsafe.
   Wherewith assumes it's on, as it has been by default since 9.1, and
@@ -208,6 +211,11 @@ tests should confirm every one. Details:
   name, filled in on the client; the lexers reject `?` in template
   text, so a query never has `??`.
 - `lsqlite3`'s `bind_values` binds `?` by position.
+- Python's `sqlite3` takes `?` with a sequence, and any named form
+  with a dict keyed by the name without its first character: `:p1`
+  and `@p1` as `p1`, and `$1` (a name to SQLite) as `1`. The round-trip
+  tests check all four. It binds `bool` as an integer, and SQLite
+  stores a NaN as `NULL`.
 - MariaDB Connector/Python's style is `?` (`qmark`), and it also takes
   `%s`, but not both in one query.
 - SQL Server's (`@p1`) and Oracle's (`:p1`) styles are already here,
@@ -257,13 +265,30 @@ tests below.
   Ctrl-Z, line breaks, comment starts, characters above U+FFFF, lone
   surrogates where a language can make them, and very long text), name
   limits, and template mistakes.
-- **Differential tests, later:** run each quoted string and name
-  through real SQLite, PostgreSQL, and MariaDB (and MySQL), in each
-  relevant SQL mode, and check it reads back exactly or fails as
-  expected; check `NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, and
-  `standard_conforming_strings` both ways; and bind template parameters
-  through each language's drivers above. Generated hostile strings
-  (fuzzing) can feed the same checks.
+- **Round trips through real engines:** `tests/engines/` runs the
+  Python library against real databases, with hostile input: the unit
+  tests' cases, every ASCII control character, quotes of many kinds,
+  combining marks, very long text, and seeded random fuzz.
+  - **SQLite (done):** `sqlite_roundtrip.py`, with Python's standard
+    `sqlite3`. Quoted strings read back exactly from `SELECT`; quoted
+    names make a table and column that read back exactly from
+    `sqlite_schema` and `pragma_table_info`, and work in an insert and
+    a select; values bound in every style the driver takes (`?`,
+    `:p1`, `@p1`, and `$1`) come back equal with the type SQLite
+    stores; nested queries and holes beside operators give the
+    expected rows; and random templates mixing holes with quoted
+    strings, aliases, and comments check that the builder's lexer and
+    the engine agree on every boundary. Inputs Wherewith rejects (NUL
+    and lone surrogates in strings, and empty names) must be rejected.
+    With Python 3.12 or later it turns off SQLite's `"…"` strings
+    (DQS), so a misquoted name fails instead of reading as text. CI
+    runs it in the `py` job.
+  - **PostgreSQL and MariaDB, next:** CI service containers, with
+    psycopg 3 and PyMySQL (both approved), each quoted string and name
+    checked in each relevant SQL mode: `NO_BACKSLASH_ESCAPES` and
+    `ANSI_QUOTES` both ways, and `standard_conforming_strings` on.
+    MySQL itself after that.
+  - Later, binding parameters through each language's drivers above.
 
 ## Open questions
 

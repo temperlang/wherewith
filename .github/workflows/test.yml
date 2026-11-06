@@ -60,3 +60,11 @@ jobs:
 
       - name: Test
         run: temper test -b ${{ matrix.backend }}
+
+      # Round trips through real engines, with the Python library and
+      # the standard library's sqlite3.
+      - if: matrix.backend == 'py'
+        name: SQLite round trips
+        run: |
+          temper build -b py
+          python tests/engines/sqlite_roundtrip.py
