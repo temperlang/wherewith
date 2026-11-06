@@ -115,6 +115,9 @@ Done:
   constructor is private: queries come from a `QueryBuilder` or a tag,
   which check their text, or from `Query.unchecked(parts)`, which skips
   every check and is named so it's plainly unsafe for untrusted text.
+  It takes any list of parts, even a `ListBuilder`, and keeps its own
+  copy, so later changes to the caller's list can't make the parts
+  and `params` disagree.
   Temper's private constructors are still public in some backends, a
   known limitation, so `new Query(parts)` may be callable there, with
   the same danger.
@@ -170,7 +173,7 @@ driver, not only the database, so the style is chosen when rendering:
 | Java | JDBC: `?` | JDBC: `?` | JDBC: `?` |
 | JavaScript | `node:sqlite`, `better-sqlite3`: `?` | `pg`: `$1` | `mysql2`: `?` |
 | Lua | `lsqlite3`: `?` | LuaSQL: none, quoting only | LuaSQL: none, quoting only |
-| Python | `sqlite3`: `?` | psycopg 3: `%s`; asyncpg: `$1` | PyMySQL, mysqlclient: `%s`; MariaDB Connector: `?` |
+| Python | `sqlite3`: `?` | psycopg 3: `%s`, or `$1` with its `RawCursor`; asyncpg: `$1` | PyMySQL, mysqlclient: `%s`; MariaDB Connector: `?` |
 | Rust | `rusqlite`: `?` | `tokio-postgres`, `sqlx`: `$1` | `mysql`, `sqlx`: `?` |
 
 Checked against each driver's docs or source (2026-11):
@@ -269,6 +272,8 @@ tests below.
   Python library against real databases, with hostile input: the unit
   tests' cases, every ASCII control character, quotes of many kinds,
   combining marks, very long text, and seeded random fuzz.
+  `roundtrip.py` has the inputs and checks they share; each engine's
+  runner says how to reach it and what it gives back.
   - **SQLite (done):** `sqlite_roundtrip.py`, with Python's standard
     `sqlite3`. Quoted strings read back exactly from `SELECT`; quoted
     names make a table and column that read back exactly from
@@ -283,11 +288,29 @@ tests below.
     With Python 3.12 or later it turns off SQLite's `"…"` strings
     (DQS), so a misquoted name fails instead of reading as text. CI
     runs it in the `py` job.
-  - **PostgreSQL and MariaDB, next:** CI service containers, with
-    psycopg 3 and PyMySQL (both approved), each quoted string and name
-    checked in each relevant SQL mode: `NO_BACKSLASH_ESCAPES` and
-    `ANSI_QUOTES` both ways, and `standard_conforming_strings` on.
-    MySQL itself after that.
+  - **PostgreSQL and MariaDB (in CI):** `postgres_roundtrip.py` with
+    psycopg 3 and `mariadb_roundtrip.py` with PyMySQL, run by CI's
+    `engines` job against service containers (PostgreSQL 18 and
+    MariaDB 11.8). They make the same checks, reading names back from
+    `information_schema` (and `pg_catalog` for PostgreSQL). PostgreSQL
+    binds with `%s` through psycopg's server-side and client-side
+    cursors, and with `$1` through its `RawCursor`, which sends the
+    SQL unchanged; it checks that `standard_conforming_strings` is on
+    and records it, and expects names over 63 bytes and NUL anywhere
+    in text to be rejected. MariaDB binds with `%s`, filled in by
+    PyMySQL on the client, and runs everything in four SQL modes: the
+    default, `NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, and both, with the
+    matching profile; in the modes without backslash escapes it also
+    checks that the default `mysql` profile's strings still end where
+    Wherewith ends them, reading back with their escapes as text. It
+    expects names over 64 characters, above U+FFFF, or ending in a
+    space to be rejected, and its DOUBLE has no NaN, infinities, or
+    subnormals, so those aren't bound. Each runner records the
+    server's own limits (truncated names, and how it treats NUL and
+    long names). Without a server, they skip; CI passes
+    `--require-server`.
+  - **MySQL itself, later:** a MySQL service container, with the
+    MariaDB runner's checks.
   - Later, binding parameters through each language's drivers above.
 
 ## Open questions

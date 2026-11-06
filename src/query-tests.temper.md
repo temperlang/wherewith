@@ -224,7 +224,29 @@ own parts. Only `Query.unchecked` can put arbitrary text in a query.
         b.appendQuery(inner);
         assert(partKinds(b.build() orelse panic()) == "text name text param text param text param");
       }
-      let raw = Query.unchecked([new QueryText("SELECT 'zq'")]);
+      let text: QueryPart = new QueryText("SELECT 'zq'");
+      let raw = Query.unchecked([text]);
       assert(partKinds(raw) == "LEAK");
       assert(raw.params.isEmpty);
+    }
+
+`unchecked` takes any list of parts, even a `ListBuilder`, and keeps its
+own copy, so changes the caller makes later leave the query's parts and
+params as they were, and consistent.
+
+    test("unchecked copies its parts") {
+      let parts = new ListBuilder<QueryPart>();
+      parts.add(new QueryText("SELECT "));
+      parts.add(new QueryParam(new SqlInt(1.toInt64())));
+      let q = Query.unchecked(parts);
+      parts.add(new QueryText(", "));
+      parts.add(new QueryParam(new SqlInt(2.toInt64())));
+      parts.set(0, new QueryText("DELETE "));
+      assert(q.parts.length == 2);
+      assert(q.params.length == 1);
+      assert(paramText(q.params[0]) == "int:1");
+      assert(qmarks(q) == "SELECT ?");
+      let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+      assert(r.sql == "SELECT $1");
+      assert(r.params.length == 1);
     }

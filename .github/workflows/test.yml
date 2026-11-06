@@ -68,3 +68,65 @@ jobs:
         run: |
           temper build -b py
           python tests/engines/sqlite_roundtrip.py
+
+  # Round trips through PostgreSQL and MariaDB, as service containers,
+  # with the Python library and the drivers in uv.lock (psycopg 3 and
+  # PyMySQL). The throwaway passwords are only for these containers.
+  engines:
+    name: round trips (PostgreSQL, MariaDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UV_PYTHON: "3.11"
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: wherewith
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: wherewith
+          MARIADB_DATABASE: wherewith
+        ports:
+          - 3306:3306
+        # Data in memory, since the name checks make many tables.
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+          --tmpfs /var/lib/mysql
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Get Temper
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download dev -R temperlang/temper -p '*-linux-x64.tgz' -O - | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP"/temper-*-linux-x64 >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build the Python library and drivers
+        id: build
+        run: |
+          temper build -b py
+          uv sync --locked
+
+      - name: PostgreSQL round trips
+        run: uv run --locked tests/engines/postgres_roundtrip.py --require-server
+
+      # Even if PostgreSQL's fail.
+      - name: MariaDB round trips
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --locked tests/engines/mariadb_roundtrip.py --require-server

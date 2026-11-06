@@ -69,15 +69,23 @@ Or on all of them:
 
     temper test -b cpp -b csharp -b java -b js -b lua -b py -b rust
 
-Round trips through a real SQLite engine use the Python library and
-only Python's standard library:
+Round trips through real engines use the Python library, with
+[uv](https://docs.astral.sh/uv/) and the drivers in `pyproject.toml`
+(psycopg 3 and PyMySQL; SQLite needs only Python's standard library):
 
     temper build -b py
     uv run tests/engines/sqlite_roundtrip.py
+    uv run tests/engines/postgres_roundtrip.py
+    uv run tests/engines/mariadb_roundtrip.py
+
+The PostgreSQL and MariaDB runners skip unless a server is reachable,
+at `127.0.0.1` on the usual port by default; each script's
+documentation lists the variables that change that.
 
 CI runs the tests on every backend for pull requests and pushes to
-`main`, using Temper's nightly `dev` build, and the SQLite round trips
-with Python 3.11. Source files in `src/` are
+`main`, using Temper's nightly `dev` build, and the round trips with
+Python 3.11: SQLite in the `py` job, and PostgreSQL and MariaDB as
+service containers in the `engines` job. Source files in `src/` are
 literate Markdown: `core.temper.md` has what every dialect shares,
 `query.temper.md` the dialect-neutral query and its builder, and each
 database has its own file (`sqlite`, `postgres`, and `mysql`) with its

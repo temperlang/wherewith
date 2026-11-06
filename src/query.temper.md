@@ -34,21 +34,24 @@ in place, so its parameters are numbered with the rest.
 
 `params` lists the values in order, the same for every placeholder
 style. Queries come from a `QueryBuilder` or a tag, which check their
-text; the constructor is private.
+text; the constructor is private. It keeps its own copy of the parts
+(free when they're already a `List`), so a caller that goes on
+changing its list can't make the parts and `params` disagree.
 
     export class Query {
       public parts: List<QueryPart>;
       public params: List<SqlValue>;
 
-      private constructor(parts: List<QueryPart>) {
+      private constructor(parts: Listed<QueryPart>) {
+        let own = parts.toList();
         let params = new ListBuilder<SqlValue>();
         // An index loop, since Temper's C++ backend drops the lambda's
         // declaration for a for-of loop in a constructor.
-        for (var i = 0; i < parts.length; i += 1) {
-          let part = parts[i];
+        for (var i = 0; i < own.length; i += 1) {
+          let part = own[i];
           if (part is QueryParam) { params.add(part.value); }
         }
-        this.parts = parts;
+        this.parts = own;
         this.params = params.toList();
       }
 
@@ -56,13 +59,14 @@ text; the constructor is private.
 check: each `QueryText` is written into the SQL as it is, so it must
 never hold untrusted text. It's for code that checks its own text, such
 as another builder that already lexes SQL. Use a `QueryBuilder` or a
-tag otherwise.
+tag otherwise. It takes any list of parts, even a `ListBuilder` still
+being added to, and the query keeps its own copy.
 
 Temper's private constructors still come out public in some backends
 (a known limitation, for now), so there `new Query(parts)` is callable
 too, with the same danger; use `unchecked`, which says so.
 
-      public static unchecked(parts: List<QueryPart>): Query {
+      public static unchecked(parts: Listed<QueryPart>): Query {
         new Query(parts)
       }
 
@@ -271,7 +275,7 @@ let q = b.build() orelse panic();
         }
         if (!lexer.inCode) { fail("template ends inside a quote or comment"); }
         if (problem != null) { bubble() }
-        Query.unchecked(parts.toList())
+        Query.unchecked(parts)
       }
 
       public get accumulated(): Query { build() orelse panic() }
