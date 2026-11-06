@@ -27,6 +27,14 @@ comments.
       assert(check { b => b.appendSafe("SELECT /* /* */ "); b.appendInt(1); b.appendSafe(" */"); } ==
         inQuote);
       assert(check { b => b.appendSafe("SELECT /* /* */ */ "); b.appendInt(1); } == "ok");
+      // Quotes in a comment are comment text, so a `*/` in what looks
+      // like a string still closes it, and the next `'` opens one.
+      assert(check { b => b.appendSafe("SELECT /* a /* b */ 'c */ ', "); b.appendInt(1); b.appendSafe("'"); } ==
+        inQuote);
+      // Inside a comment, `/*/` opens another; at the start, `/*/ */` is
+      // one comment.
+      assert(check { b => b.appendSafe("SELECT /* a/*/ */ "); b.appendInt(1); b.appendSafe(" */"); } == inQuote);
+      assert(check { b => b.appendSafe("SELECT /*/ */ "); b.appendInt(1); } == "ok");
       // Plain strings don't read backslash escapes; E strings do.
       assert(check { b => b.appendSafe("SELECT 'a\\' , "); b.appendInt(1); } == "ok");
       assert(check { b => b.appendSafe("SELECT E'a\\' , "); b.appendInt(1); b.appendSafe("'"); } ==

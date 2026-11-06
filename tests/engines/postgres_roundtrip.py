@@ -227,12 +227,17 @@ class Postgres(rt.Engine):
 
     def random_comment(self, rng, body: str) -> str:
         r = rng.random()
+        # Block comments nest, so each `/*` needs its own `*/`. An
+        # unclosed one could be closed by a later literal holding `*/`,
+        # shifting everything after it (the Temper tests cover unclosed
+        # comments). Spaces keep a body's `/` or `*` from joining a
+        # marker, as `a/` before `*/` would make `/*`.
         if r < 0.25:
-            # Block comments nest, so an unclosed `/*` inside makes the
-            # rest a comment too, and the builder must see that.
-            return "/*" + rt.without(body, "*/") + "*/"
+            a, b = sorted(rng.randint(0, len(body)) for _ in range(2))
+            x, y, z = (rt.without(t, "*/", "/*") for t in (body[:a], body[a:b], body[b:]))
+            return f"/* {x} /* {y} */ {z} */"
         if r < 0.5:
-            return "/*" + rt.without(body, "*/", "/*") + "*/"
+            return "/* " + rt.without(body, "*/", "/*") + " */"
         # A line feed or a carriage return ends a line comment.
         return "--" + rt.without(body, "\n", "\r") + rng.choice(["\n", "\r", "\r\n"])
 
