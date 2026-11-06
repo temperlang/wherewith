@@ -2,7 +2,9 @@
 
 What every dialect shares: the `Dialect` class with its quoting rules,
 names that are safe in every dialect, and the values queries bind as
-parameters. Each database's own rules and query tag are in its file:
+parameters. [Queries](query.temper.md) hold text, values, and names
+apart, and render for a dialect. Each database's own rules, query tag,
+and template lexer are in its file:
 [SQLite](sqlite.temper.md), [PostgreSQL](postgres.temper.md), and
 [MySQL and MariaDB](mysql.temper.md).
 

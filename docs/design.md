@@ -101,20 +101,34 @@ Done:
   bad input, and `nameProblem` and `stringProblem`, which say why.
 - `Identifier.named(name)`: a name that quotes safely in every dialect,
   for template holes.
-- The `sqlite` tag: `sqlite"SELECT * FROM t WHERE a = ${x}"` gives a
-  `SqliteQuery` with `sql` (`?` for each value) and `params`, a list of
-  `SqlValue` (`SqlText`, `SqlInt`, `SqlFloat`, `SqlBool`, or
-  `SqlNull`). Holes take values, an `Identifier` (written quoted), or
-  another `SqliteQuery` (written as SQL, with its parameters). Template
-  mistakes (a hole in quotes or a comment, `?` or `:a` in the text, or
-  text ending in a quote) panic; `SqliteBuilder.build` bubbles instead.
-
-Next:
-
-- A dialect-neutral query object, which tags and code both produce
-  through a public builder, rendered per dialect, with the placeholder
-  style chosen at render time, since it depends on the driver (see
-  below).
+- `Query`: a dialect-neutral query, as a list of parts: `QueryText`
+  (SQL text), `QueryParam` (a `SqlValue`: `SqlText`, `SqlInt`,
+  `SqlFloat`, `SqlBool`, or `SqlNull`), and `QueryName` (an
+  `Identifier`). A nested query's parts go in place, so parameters
+  number straight through. `params` lists the values in order.
+- `Query.render(dialect, style)` gives a `RenderedQuery`, with `sql`
+  and `params`: names quoted for the dialect, and each parameter
+  written in a `PlaceholderStyle`, chosen at render time: `question`
+  (`?`), `dollarNumbered` (`$1`), `percentS` (`%s`, doubling every `%`
+  in the text and names), `atNamed` (`@p1`), or `colonNamed` (`:p1`).
+  A named style bubbles if its marker is anywhere in the text. Where a
+  hole meets text it could merge with (`5-` and `-1`, `a` and `$1`, or
+  two quoted names), rendering adds a space.
+- `QueryBuilder(dialect)`: makes a query from plain code, checking its
+  text with that dialect's lexing rules: `appendSafe` for trusted SQL
+  text, `append` overloads for values, `SqlValue`, `Identifier`, and
+  `Query`, and `build`, which bubbles on a mistake, with
+  `templateProblem` saying why.
+- The `sqlite`, `postgres`, and `mysql` tags (`SqliteTag`,
+  `PostgresTag`, and `MysqlTag`): `postgres"SELECT * FROM t WHERE a =
+  ${x}"` gives a `Query`, built with that dialect's checks. Template
+  mistakes panic: a hole in a quote or comment (including PostgreSQL's
+  dollar quotes and MySQL's `#` comments), placeholder-like text (`?`
+  everywhere, `$` outside PostgreSQL's dollar quotes, and SQLite's `:a`
+  and `@a`), text ending in a quote or block comment, a MySQL backslash
+  before a quote or backslash in a string (read differently under
+  `NO_BACKSLASH_ESCAPES`), and MySQL executable comments. Each
+  dialect's file lists its rules.
 
 Later, after a design pass:
 
@@ -135,25 +149,34 @@ Also planned:
 
 The query keeps text and values apart; a driver adapter binds each
 value with the driver's own type. Placeholder syntax depends on the
-driver, not only the database:
+driver, not only the database, so the style is chosen when rendering:
 
 | Language | SQLite | PostgreSQL | MySQL and MariaDB |
 | --- | --- | --- | --- |
 | C++ | `sqlite3`: `?` | `libpq`: `$1` | Connector/C: `?` |
-| C# | `Microsoft.Data.Sqlite`: `$a`, `@a`, `:a` | Npgsql: `$1` or `@a` | MySqlConnector: `?` or `@a` |
+| C# | `Microsoft.Data.Sqlite`: `@p1` (to verify) | Npgsql: `$1` or `@p1` (to verify) | MySqlConnector: `?` or `@p1` (to verify) |
 | Java | JDBC: `?` | JDBC: `?` | JDBC: `?` |
-| JavaScript | `node:sqlite`, `better-sqlite3`: `?` | `pg`: `$1` | `mysql2`: `?` |
-| Lua | `lsqlite3`: `?` | LuaSQL: none (quoting only) | LuaSQL: none (quoting only) |
-| Python | `sqlite3`: `?` | psycopg: `%s` (literal `%` doubled); asyncpg: `$1` | PyMySQL, mysqlclient: `%s`; MariaDB Connector: `?` |
+| JavaScript | `node:sqlite`, `better-sqlite3`: `?` | `pg`: `$1` | `mysql2`: `?` (to verify) |
+| Lua | `lsqlite3`: `?` (to verify) | LuaSQL: none, quoting only (to verify) | LuaSQL: none, quoting only (to verify) |
+| Python | `sqlite3`: `?` | psycopg: `%s` (to verify); asyncpg: `$1` | PyMySQL, mysqlclient: `%s` (to verify); MariaDB Connector: `?` (to verify) |
 | Rust | `rusqlite`: `?` | `tokio-postgres`, `sqlx`: `$1` | `mysql`, `sqlx`: `?` |
 
-So a query will keep its text as parts between parameters, and render
-them in a chosen style: `?`, `$1`, `%s` (doubling `%` in the text), or
-named `@p1`. The SQLite slice writes `?` directly; C#'s
-`Microsoft.Data.Sqlite` needs named parameters, so it will need a
-named style. These are from the drivers' docs and need checking in the
-differential tests. Where a driver has no parameters (LuaSQL), quoting
-is the fallback, which is why `quoteString` exists.
+All of these are from memory of the drivers' docs, not yet checked
+against them; "to verify" marks the least certain, and the
+differential tests should confirm every one. More to check:
+
+- `%s` drivers (psycopg, PyMySQL, and mysqlclient) skip `%` formatting
+  when the parameters are `None`, so an adapter must always pass a
+  list, even an empty one (to verify, especially psycopg 3 with an
+  empty list). Some fill in values on the client, so `-%s` with `-1`
+  would be `--1`, a comment; rendering's spaces around holes prevent
+  that.
+- Named styles: SQLite reads `@p1` and `:p1` itself. Npgsql rewrites
+  `@name` to `$1` by scanning the text (to verify), so a PostgreSQL
+  query with `@` operators fails `atNamed`; use `dollarNumbered`.
+- SQL Server and Oracle (`@p1` and `:p1`) aren't dialects yet.
+- Where a driver has no parameters (LuaSQL), quoting is the fallback,
+  which is why `quoteString` exists.
 
 ## Prior art and test oracles
 
@@ -226,8 +249,9 @@ Each has a recommendation, but stays open until decided.
 6. **Template mistakes:** panic when the tag is used (now), or make
    every template bubble, which Rust would see as a `Result`?
    Recommended: templates panic, and the builder bubbles.
-7. **Placeholder styles:** chosen when rendering (planned), or fixed
-   per dialect? Recommended: chosen at render time.
+7. **Placeholder styles:** chosen when rendering, or fixed per
+   dialect? Decided: chosen at render time, since it depends on the
+   driver.
 8. **Whitelists:** which lists first, and how strict per dialect
    (`ColumnType` differs the most)? Recommended: start with SQLite's
    column types, defaults, foreign-key actions, functions, and
