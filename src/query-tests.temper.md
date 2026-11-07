@@ -165,6 +165,7 @@ Values never appear in the SQL text, in any style or dialect.
         sqlite"SELECT ${secret}, ${n}",
         postgres"SELECT ${secret}, ${n}",
         mysql"SELECT ${secret}, ${n}",
+        duckdb"SELECT ${secret}, ${n}",
       ];
       for (let q of qs) {
         assert(q.params.length == 2);
@@ -207,6 +208,7 @@ own parts. Only `Query.unchecked` can put arbitrary text in a query.
         sqlite"SELECT ${col} WHERE a = ${evil} AND b = ${new SqlText(evil)}",
         postgres"SELECT ${col} WHERE a = ${evil} AND b = ${new SqlText(evil)}",
         mysql"SELECT ${col} WHERE a = ${evil} AND b = ${new SqlText(evil)}",
+        duckdb"SELECT ${col} WHERE a = ${evil} AND b = ${new SqlText(evil)}",
       ];
       for (let q of tagged) {
         assert(partKinds(q) == "text name text param text param");

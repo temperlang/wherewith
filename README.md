@@ -1,7 +1,7 @@
 # Wherewith
 
-Writes SQL safely for SQLite, PostgreSQL, and MySQL or MariaDB, the
-same in every language: quoting names and strings the way each database
+Writes SQL safely for SQLite, PostgreSQL, MySQL or MariaDB, and DuckDB,
+the same in every language: quoting names and strings the way each database
 really reads them, and templates that bind values as parameters, so a
 value never becomes SQL. It's designed to sit underneath safe
 composition frameworks, query builders, and admin tools.
@@ -24,8 +24,8 @@ q.params; // [SqlText(name)]
 let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
 r.sql;    // SELECT id FROM students WHERE name = $1, or = %s for psycopg
 
-// Templates for SQLite, PostgreSQL, and MySQL each check the SQL text
-// with that database's rules, and plain code can use a QueryBuilder.
+// Templates for SQLite, PostgreSQL, MySQL, and DuckDB each check the SQL
+// text with that database's rules, and plain code can use a QueryBuilder.
 mysql"SELECT * FROM t WHERE a = '${name}'"; // panics: a value inside quotes
 
 // Names are quoted as each database expects.
@@ -71,25 +71,29 @@ Or on all of them:
 
 Round trips through real engines use the Python library, with
 [uv](https://docs.astral.sh/uv/) and the drivers in `pyproject.toml`
-(psycopg 3 and PyMySQL; SQLite needs only Python's standard library):
+(psycopg 3, PyMySQL, and DuckDB's own package; SQLite needs only
+Python's standard library):
 
     temper build -b py
     uv run tests/engines/sqlite_roundtrip.py
+    uv run tests/engines/duckdb_roundtrip.py
     uv run tests/engines/postgres_roundtrip.py
     uv run tests/engines/mariadb_roundtrip.py
 
-The PostgreSQL and MariaDB runners skip unless a server is reachable,
+SQLite and DuckDB are embedded, so those run anywhere. The PostgreSQL
+and MariaDB runners skip unless a server is reachable,
 at `127.0.0.1` on the usual port by default; each script's
 documentation lists the variables that change that.
 
 CI runs the tests on every backend for pull requests and pushes to
 `main`, using Temper's nightly `dev` build, and the round trips with
-Python 3.11: SQLite in the `py` job, and PostgreSQL and MariaDB as
-service containers in the `engines` job. Source files in `src/` are
-literate Markdown: `core.temper.md` has what every dialect shares,
-`query.temper.md` the dialect-neutral query and its builder, and each
-database has its own file (`sqlite`, `postgres`, and `mysql`) with its
-tag and template lexer, with tests beside them in `-tests` files.
+Python 3.11: SQLite and DuckDB in the `py` job, and PostgreSQL and
+MariaDB as service containers in the `engines` job. Source files in
+`src/` are literate Markdown: `core.temper.md` has what every dialect
+shares, `query.temper.md` the dialect-neutral query and its builder,
+and each database has its own file (`sqlite`, `postgres`, `mysql`, and
+`duckdb`) with its tag and template lexer, with tests beside them in
+`-tests` files.
 
 ## License
 

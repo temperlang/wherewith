@@ -4,8 +4,8 @@ A *Query* is SQL with its values kept apart: text, parameters, and
 names, in order. It doesn't belong to one database or one driver.
 Rendering it takes a [Dialect](core.temper.md), which quotes its names,
 and a *PlaceholderStyle*, which writes its parameters the way the
-driver expects. Tags (`sqlite`, `postgres`, and `mysql`) and plain code
-both make queries with a `QueryBuilder`, which checks the text with
+driver expects. Tags (`sqlite`, `postgres`, `mysql`, and `duckdb`) and
+plain code both make queries with a `QueryBuilder`, which checks the text with
 one database's lexing rules.
 
 ```temper inert
@@ -145,7 +145,8 @@ most MySQL and MariaDB drivers.
       public static question: PlaceholderStyle = doPure { new PlaceholderStyle("question", 0) };
 
 `dollarNumbered` writes `$1`, `$2`, and so on, as PostgreSQL's server
-reads them: libpq, `pg`, asyncpg, `tokio-postgres`, and `sqlx`.
+reads them: libpq, `pg`, asyncpg, `tokio-postgres`, and `sqlx`. DuckDB
+reads them too.
 
       public static dollarNumbered: PlaceholderStyle = doPure { new PlaceholderStyle("dollarNumbered", 1) };
 
@@ -199,8 +200,9 @@ mistake can't misplace a parameter:
 - The text can't have its own placeholders, such as `?` or `$1`, which
   would shift every parameter's place. Each dialect's file says what
   counts.
-- The text can't hold NUL. PostgreSQL and SQLite stop reading SQL
-  text there, and MySQL and MariaDB end a line comment there.
+- The text can't hold NUL. PostgreSQL, SQLite, and DuckDB's C API
+  stop reading SQL text there, and MySQL and MariaDB end a line
+  comment there.
 - The text can't end inside a quote or a block comment. If it ends in
   a line comment, a line break ends that, so text after a nested query
   stays code.
@@ -343,7 +345,9 @@ of it can't join into one token.
       if (dialect.name == "sqlite") {
         new SqliteLexer()
       } else if (dialect.name == "postgres") {
-        new PostgresLexer()
+        new PostgresLexer(false)
+      } else if (dialect.name == "duckdb") {
+        new PostgresLexer(true)
       } else {
         new MysqlLexer()
       }

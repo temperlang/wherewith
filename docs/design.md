@@ -1,7 +1,7 @@
 # Wherewith Design
 
-Wherewith writes SQL text safely for SQLite, PostgreSQL, and MySQL or
-MariaDB, the same in every language Temper supports. It's small on
+Wherewith writes SQL text safely for SQLite, PostgreSQL, MySQL or
+MariaDB, and DuckDB, the same in every language Temper supports. It's small on
 purpose: the pieces a safe-composition framework, a query builder, or
 an admin tool needs underneath, done right per dialect.
 
@@ -27,14 +27,14 @@ an admin tool needs underneath, done right per dialect.
   enough to find quotes, comments, and stray parameters.
 - Translating SQL between dialects.
 - Claims of conformance to the SQL standard. Wherewith follows what the
-  three databases actually do, as their manuals describe and, later,
+  databases actually do, as their manuals describe and, later,
   as tests against the real engines show.
-- Other databases, for now. SQL Server and DuckDB are planned next,
-  then Oracle and Db2.
+- Other databases, for now. SQL Server is planned next, then Oracle
+  and Db2.
 
 ## Model: a shared core plus profiles
 
-The three databases agree on a core, which Wherewith uses by default:
+The databases agree on a core, which Wherewith uses by default:
 
 - Names are delimited with `"…"`, and `"` inside is doubled.
 - Strings are delimited with `'…'`, and `'` inside is doubled.
@@ -44,16 +44,16 @@ differs. Wherewith always writes the one form that's safe in every
 setting of its database, rather than the shortest form for one
 setting.
 
-| | SQLite | PostgreSQL | MySQL and MariaDB |
-| --- | --- | --- | --- |
-| Names | `"…"`, `""` | `"…"`, `""` | `` `…` ``, with `` ` `` doubled (works with or without `ANSI_QUOTES`) |
-| Name limits | none | 63 bytes, longer truncated (rejected here) | 64 characters, no NUL, nothing above U+FFFF, no trailing whitespace, no `#mysql50#` prefix |
-| Strings | `'…'`, `''` | `'…'`, `''` | `'…'`, `''` |
-| Backslash in strings | plain | plain, with `standard_conforming_strings` on (the default since 9.1) | an escape, unless `NO_BACKSLASH_ESCAPES` |
-| NUL in strings | ends the SQL text: rejected | not allowed in text: rejected | `\0` (rejected under `NO_BACKSLASH_ESCAPES`) |
-| Other string forms | none | `E'…'`, `U&'…'`, `$$…$$` (never written) | `"…"` strings without `ANSI_QUOTES` (never written) |
-| Comments | `--` (to `\n`), `/* */` | `--` (to `\n` or `\r`), `/* */` (nested) | `-- ` (with a space or control character), `#` (both to `\n`), `/* */` |
-| Parameters in SQL | `?`, `?1`, `:a`, `@a`, `$a` | `$1` (server side) | `?` (server side) |
+| | SQLite | PostgreSQL | MySQL and MariaDB | DuckDB |
+| --- | --- | --- | --- | --- |
+| Names | `"…"`, `""` | `"…"`, `""` | `` `…` ``, with `` ` `` doubled (works with or without `ANSI_QUOTES`) | `"…"`, `""` (also `` `…` ``) |
+| Name limits | none | 63 bytes, longer truncated (rejected here) | 64 characters, no NUL, nothing above U+FFFF, no trailing whitespace, no `#mysql50#` prefix | none, but matched without regard to ASCII case |
+| Strings | `'…'`, `''` | `'…'`, `''` | `'…'`, `''` | `'…'`, `''` |
+| Backslash in strings | plain | plain, with `standard_conforming_strings` on (the default since 9.1) | an escape, unless `NO_BACKSLASH_ESCAPES` | plain, with no setting |
+| NUL in strings | ends the SQL text: rejected | not allowed in text: rejected | `\0` (rejected under `NO_BACKSLASH_ESCAPES`) | ends SQL text in the C API: rejected |
+| Other string forms | none | `E'…'`, `U&'…'`, `$$…$$` (never written) | `"…"` strings without `ANSI_QUOTES` (never written) | `E'…'`, `$$…$$` (never written) |
+| Comments | `--` (to `\n`), `/* */` | `--` (to `\n` or `\r`), `/* */` (nested) | `-- ` (with a space or control character), `#` (both to `\n`), `/* */` | `--` (to `\n` or `\r`), `/* */` (nested) |
+| Parameters in SQL | `?`, `?1`, `:a`, `@a`, `$a` | `$1` (server side) | `?` (server side) | `?`, `?1`, `$1`, `$a` |
 
 Sources: SQLite's [keywords and quoting](https://www.sqlite.org/lang_keywords.html),
 [expressions and parameters](https://www.sqlite.org/lang_expr.html),
@@ -67,7 +67,15 @@ MySQL's [string literals](https://dev.mysql.com/doc/refman/8.4/en/string-literal
 [SQL modes](https://dev.mysql.com/doc/refman/8.4/en/sql-mode.html);
 MariaDB's [string literals](https://mariadb.com/kb/en/string-literals/),
 [identifier names](https://mariadb.com/kb/en/identifier-names/), and
-[SQL modes](https://mariadb.com/kb/en/sql-mode/).
+[SQL modes](https://mariadb.com/kb/en/sql-mode/); DuckDB's
+[keywords and identifiers](https://duckdb.org/docs/current/sql/dialect/keywords_and_identifiers),
+[literal types](https://duckdb.org/docs/current/sql/data_types/literal_types),
+[SQL introduction](https://duckdb.org/docs/current/sql/introduction)
+(comments), and [prepared statements](https://duckdb.org/docs/current/sql/query_syntax/prepared_statements).
+DuckDB's manual doesn't say whether block comments nest, where a line
+comment ends, which names `?1` and `$a` are, or how its Unicode spaces
+work (below), so those come from DuckDB 2.0's own behavior, which its
+round trip checks.
 
 Notes on each:
 
@@ -92,6 +100,22 @@ Notes on each:
   Both assume a `utf8mb4` connection character set; some older
   multi-byte sets (such as GBK) can hide a quote in a character's
   second byte.
+- **DuckDB** lexes as PostgreSQL does, with `standard_conforming_strings`
+  always on, plus backtick names. Its text can hold NUL, but its C API
+  ends SQL text there, so the profile rejects it. It matches names
+  without regard to ASCII case, even quoted, so `"A"` and `"a"` clash.
+  Before parsing, it turns 18 Unicode spaces (U+00A0, U+2000 to U+200B,
+  U+202F, U+205F, U+2060, U+3000, and U+FEFF) into plain spaces, in a
+  simpler pass that skips `'…'`, `"…"`, dollar quotes, and line
+  comments, but reads block comments, backtick names, and `E'…'`
+  escapes as code. A quote there puts the pass out of step, and from
+  then on it changes spaces inside later strings and names, and leaves
+  them alone in code, where they're whitespace to the parser (changing
+  whether `E'` starts an escape string, say). The `duckdb` lexer
+  follows the pass and refuses templates that put it out of step, and
+  Unicode spaces it would change inside a quote; `quoteString` and
+  `quoteName` output is safe wherever the pass is in step. Parser
+  extensions that replace DuckDB's parser aren't covered.
 
 Every profile rejects names that are empty or hold NUL, and strings and
 names with lone surrogates (possible only where strings are UTF-16),
@@ -102,8 +126,8 @@ since they have no UTF-8 form.
 Done:
 
 - `Dialect`, with profiles `Dialect.sqlite`, `Dialect.postgres`,
-  `Dialect.mysql`, and `Dialect.mysqlNoBackslashEscapes` (private
-  constructor). Methods: `quoteName` and `quoteString`, which bubble on
+  `Dialect.mysql`, `Dialect.mysqlNoBackslashEscapes`, and
+  `Dialect.duckdb` (private constructor). Methods: `quoteName` and `quoteString`, which bubble on
   bad input, and `nameProblem` and `stringProblem`, which say why.
 - `Identifier.named(name)`: a name that quotes safely in every dialect,
   for template holes.
@@ -134,17 +158,18 @@ Done:
   text, `append` overloads for values, `SqlValue`, `Identifier`, and
   `Query`, and `build`, which bubbles on a mistake, with
   `templateProblem` saying why.
-- The `sqlite`, `postgres`, and `mysql` tags (`SqliteTag`,
-  `PostgresTag`, and `MysqlTag`): `postgres"SELECT * FROM t WHERE a =
-  ${x}"` gives a `Query`, built with that dialect's checks. Template
-  mistakes panic: a hole in a quote or comment (including PostgreSQL's
-  dollar quotes and MySQL's `#` comments), placeholder-like text (`?`
-  everywhere, `$` outside PostgreSQL's dollar quotes, and SQLite's `:a`
-  and `@a`), text ending in a quote or block comment, a MySQL backslash
-  before a quote or backslash in a string (read differently under
-  `NO_BACKSLASH_ESCAPES`), MySQL executable comments, quotes in
-  MySQL optimizer hints (`/*+ … */`), and NUL anywhere in the text.
-  Each dialect's file lists its rules.
+- The `sqlite`, `postgres`, `mysql`, and `duckdb` tags (`SqliteTag`,
+  `PostgresTag`, `MysqlTag`, and `DuckdbTag`): `postgres"SELECT * FROM
+  t WHERE a = ${x}"` gives a `Query`, built with that dialect's checks.
+  Template mistakes panic: a hole in a quote or comment (including
+  PostgreSQL's and DuckDB's dollar quotes and MySQL's `#` comments),
+  placeholder-like text (`?` everywhere, `$` outside PostgreSQL's and
+  DuckDB's dollar quotes, and SQLite's `:a` and `@a`), text ending in a
+  quote or block comment, a MySQL backslash before a quote or backslash
+  in a string (read differently under `NO_BACKSLASH_ESCAPES`), MySQL
+  executable comments, quotes in MySQL optimizer hints (`/*+ … */`),
+  text that puts DuckDB's Unicode space pass out of step, and NUL
+  anywhere in the text. Each dialect's file lists its rules.
 
 Later, after a design pass:
 
@@ -167,15 +192,15 @@ The query keeps text and values apart; a driver adapter binds each
 value with the driver's own type. Placeholder syntax depends on the
 driver, not only the database, so the style is chosen when rendering:
 
-| Language | SQLite | PostgreSQL | MySQL and MariaDB |
-| --- | --- | --- | --- |
-| C++ | `sqlite3`: `?` | `libpq`: `$1` | Connector/C: `?` |
-| C# | `Microsoft.Data.Sqlite`: `@p1` or `:p1` (no `?`) | Npgsql: `$1` (recommended), or `@p1` | MySqlConnector: `?` or `@p1` |
-| Java | JDBC: `?` | JDBC: `?` | JDBC: `?` |
-| JavaScript | `node:sqlite`, `better-sqlite3`: `?` | `pg`: `$1` | `mysql2`: `?` |
-| Lua | `lsqlite3`: `?` | LuaSQL: none, quoting only | LuaSQL: none, quoting only |
-| Python | `sqlite3`: `?` | psycopg 3: `%s`, or `$1` with its `RawCursor`; asyncpg: `$1` | PyMySQL, mysqlclient: `%s`; MariaDB Connector: `?` |
-| Rust | `rusqlite`: `?` | `tokio-postgres`, `sqlx`: `$1` | `mysql`, `sqlx`: `?` |
+| Language | SQLite | PostgreSQL | MySQL and MariaDB | DuckDB |
+| --- | --- | --- | --- | --- |
+| C++ | `sqlite3`: `?` | `libpq`: `$1` | Connector/C: `?` | DuckDB's C and C++ APIs: `?` or `$1` |
+| C# | `Microsoft.Data.Sqlite`: `@p1` or `:p1` (no `?`) | Npgsql: `$1` (recommended), or `@p1` | MySqlConnector: `?` or `@p1` | DuckDB.NET: `?` or `$1` |
+| Java | JDBC: `?` | JDBC: `?` | JDBC: `?` | JDBC: `?` |
+| JavaScript | `node:sqlite`, `better-sqlite3`: `?` | `pg`: `$1` | `mysql2`: `?` | `@duckdb/node-api`: `?` or `$1` |
+| Lua | `lsqlite3`: `?` | LuaSQL: none, quoting only | LuaSQL: none, quoting only | none common, quoting only |
+| Python | `sqlite3`: `?` | psycopg 3: `%s`, or `$1` with its `RawCursor`; asyncpg: `$1` | PyMySQL, mysqlclient: `%s`; MariaDB Connector: `?` | `duckdb`: `?` or `$1` |
+| Rust | `rusqlite`: `?` | `tokio-postgres`, `sqlx`: `$1` | `mysql`, `sqlx`: `?` | `duckdb`: `?` or `$1` |
 
 Checked against each driver's docs or source (2026-11):
 `Microsoft.Data.Sqlite`'s [parameters](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/parameters)
@@ -190,7 +215,9 @@ unreachable); LuaSQL's [manual](https://lunarmodules.github.io/luasql/manual.htm
 psycopg's [query conversion](https://github.com/psycopg/psycopg/blob/master/psycopg/psycopg/_queries.py);
 PyMySQL's [cursors](https://github.com/PyMySQL/PyMySQL/blob/main/pymysql/cursors.py);
 mysqlclient's [cursors](https://github.com/PyMySQL/mysqlclient/blob/main/src/MySQLdb/cursors.py);
-and MariaDB Connector/Python's [module](https://mariadb.com/docs/connectors/mariadb-connector-python/api/module).
+MariaDB Connector/Python's [module](https://mariadb.com/docs/connectors/mariadb-connector-python/api/module);
+and DuckDB's [prepared statements](https://duckdb.org/docs/current/sql/query_syntax/prepared_statements)
+and [Python DB API](https://duckdb.org/docs/current/clients/python/dbapi).
 The rest are from memory of the drivers' docs, and the differential
 tests should confirm every one. Details:
 
@@ -222,6 +249,11 @@ tests should confirm every one. Details:
   stores a NaN as `NULL`.
 - MariaDB Connector/Python's style is `?` (`qmark`), and it also takes
   `%s`, but not both in one query.
+- DuckDB's manual lists `?`, `$1`, and `$name`, and says JDBC takes
+  only `?`. Python's `duckdb` takes `?` and `$1` with a list, and any
+  `$` name with a dict keyed by the name without its `$`, so `$1` as
+  `1`; the round trip checks all three. DuckDB also reads `?1` as a
+  numbered parameter.
 - SQL Server's (`@p1`) and Oracle's (`:p1`) styles are already here,
   for when those dialects come.
 - Where a driver has no parameters (LuaSQL), quoting is the fallback,
@@ -310,6 +342,19 @@ tests below.
     server's own limits (truncated names, and how it treats NUL and
     long names). Without a server, they skip; CI passes
     `--require-server`.
+  - **DuckDB (done):** `duckdb_roundtrip.py`, with the `duckdb`
+    package, embedded and in memory, so it runs anywhere; CI runs it in
+    the `py` job. It makes the same checks, reading names back from
+    `information_schema` and `duckdb_tables()` and `duckdb_columns()`,
+    and binds with `?` and `$1` by position and `$1` by name. It also
+    checks that the Unicode spaces DuckDB changes are the 18 the lexer
+    knows, and, for random text in a block comment, which DuckDB's
+    parser skips but its Unicode space pass reads, that the lexer finds
+    the pass out of step exactly when DuckDB's is. It records DuckDB's
+    limits: no truncation of long names, names matched without regard
+    to case, and NUL taken in names and literals (which Wherewith
+    rejects anyway). It uses two threads and a 1 GB memory limit, since
+    DuckDB's default of a thread per core reserves much memory.
   - **MySQL itself, later:** a MySQL service container, with the
     MariaDB runner's checks.
   - Later, binding parameters through each language's drivers above.
@@ -318,9 +363,9 @@ tests below.
 
 Each has a recommendation, but stays open until decided.
 
-1. **Tag names:** `sqlite`, `postgres`, and `mysql`, or names that
-   can't clash with other libraries' tags, such as `sqliteQuery`?
-   Recommended: the plain names `sqlite`, `postgres`, and `mysql`.
+1. **Tag names:** `sqlite`, `postgres`, `mysql`, and `duckdb`, or
+   names that can't clash with other libraries' tags, such as
+   `sqliteQuery`? Recommended: the plain names.
 2. **NUL in SQLite strings:** reject (now), or write an expression
    such as `'a'||char(0)||'b'` where an expression is allowed?
    Recommended: keep rejecting; bind such values as parameters.
@@ -353,4 +398,4 @@ Each has a recommendation, but stays open until decided.
   as documented above, with no extra rejection of backslashes.
 - **Spacing:** the space rendering adds beside a hole, as in `- ?`, is
   fine, even where it isn't needed.
-- **More databases:** SQL Server and DuckDB next, then Oracle and Db2.
+- **More databases:** DuckDB (done), then SQL Server, Oracle, and Db2.

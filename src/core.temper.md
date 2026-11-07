@@ -5,13 +5,13 @@ names that are safe in every dialect, and the values queries bind as
 parameters. [Queries](query.temper.md) hold text, values, and names
 apart, and render for a dialect. Each database's own rules, query tag,
 and template lexer are in its file:
-[SQLite](sqlite.temper.md), [PostgreSQL](postgres.temper.md), and
-[MySQL and MariaDB](mysql.temper.md).
+[SQLite](sqlite.temper.md), [PostgreSQL](postgres.temper.md),
+[MySQL and MariaDB](mysql.temper.md), and [DuckDB](duckdb.temper.md).
 
 ## Dialects
 
 A *Dialect* is a profile of one database's SQL text rules. Each starts
-from the core the three databases share, and overrides only where its
+from the core the databases share, and overrides only where its
 database differs:
 
 - **Names** (delimited identifiers) go in `"…"`, with `"` doubled.
@@ -90,6 +90,13 @@ constructor; each database's file explains its profile.
 
       public static postgres: Dialect = doPure {
         new Dialect("postgres", char'"', false, 63, 0, true, false)
+      };
+
+[DuckDB](duckdb.temper.md): no backslash escapes and no limit on names,
+as for SQLite.
+
+      public static duckdb: Dialect = doPure {
+        new Dialect("duckdb", char'"', false, 0, 0, true, false)
       };
 
 [MySQL and MariaDB](mysql.temper.md): names up to 64 characters, in
@@ -198,10 +205,11 @@ for SQL that has to be text, such as a `DEFAULT` in DDL.
       }
 
 `stringProblem` says why text can't be a string literal for this
-dialect, or is null if it can. A NUL can't be written in SQLite's or
-PostgreSQL's strings (SQLite's parser ends the text there, and
-PostgreSQL's text can't hold one), nor under `NO_BACKSLASH_ESCAPES`,
-where nothing escapes it. Lone surrogates have no UTF-8 form.
+dialect, or is null if it can. A NUL can't be written in SQLite's,
+PostgreSQL's, or DuckDB's strings (SQLite's parser ends the text there,
+PostgreSQL's text can't hold one, and DuckDB's C API takes SQL text
+that ends at a NUL), nor under `NO_BACKSLASH_ESCAPES`, where nothing
+escapes it. Lone surrogates have no UTF-8 form.
 
       public stringProblem(value: String): String? {
         for (var i = String.begin; value.hasIndex(i); i = value.next(i)) {

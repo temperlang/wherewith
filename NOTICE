@@ -1,4 +1,5 @@
 Wherewith includes no third-party material.
 
 Its docs link to, and describe in their own words, the public manuals
-of SQLite, PostgreSQL, MySQL, and MariaDB; they don't copy from them.
+of SQLite, PostgreSQL, MySQL, MariaDB, and DuckDB; they don't copy
+from them.

@@ -1,7 +1,7 @@
 """Shared code for the round trips through real engines in this directory.
 
-Each runner (`sqlite_roundtrip.py`, `postgres_roundtrip.py`, and
-`mariadb_roundtrip.py`) describes its engine with an `Engine` subclass:
+Each runner (`sqlite_roundtrip.py`, `postgres_roundtrip.py`,
+`mariadb_roundtrip.py`, and `duckdb_roundtrip.py`) describes its engine with an `Engine` subclass:
 how to run SQL, which inputs the engine can't take, and what it gives
 back. The checks here are the same for every engine:
 
@@ -666,7 +666,9 @@ def check_random_templates(e: Engine, strings: list[str], seed: int, n: int) -> 
             q = b.build()
         except Exception:  # noqa: BLE001
             # Only an alias or comment the engine's syntax rules out,
-            # such as an unclosed nested comment, fails the build here.
+            # such as an unclosed nested comment, or one the lexer
+            # refuses by design, such as a quote in a DuckDB block
+            # comment, fails the build here.
             count("random templates skipped")
             continue
         st = rng.choice(styles)

@@ -8,7 +8,7 @@ long text. Tests for one database's rules are in its own tests file.
 ## Test helpers
 
     let allDialects(): List<Dialect> {
-      [Dialect.sqlite, Dialect.postgres, Dialect.mysql, Dialect.mysqlNoBackslashEscapes]
+      [Dialect.sqlite, Dialect.postgres, Dialect.mysql, Dialect.mysqlNoBackslashEscapes, Dialect.duckdb]
     }
 
     let str(d: Dialect, s: String): String { d.quoteString(s) orelse "(fails)" }
@@ -79,6 +79,7 @@ quotes, comment starts, line breaks, and characters above U+FFFF.
       assert(str(Dialect.sqlite, long) == "'${forSqlite.toString()}'");
       assert(str(Dialect.mysql, long) == "'${forMysql.toString()}'");
       assert(str(Dialect.postgres, long) == "'${forSqlite.toString()}'");
+      assert(str(Dialect.duckdb, long) == "'${forSqlite.toString()}'");
     }
 
 Lone surrogates exist only where strings are UTF-16 (C#, Java, and

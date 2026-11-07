@@ -73,9 +73,11 @@ What `QueryBuilder` checks for PostgreSQL:
   `jsonb_exists_any`), and `$` only starts a dollar quote, so names
   with `$` need quoting. Casts (`::`) and operators with `@` are fine.
 
-The lexer keeps its state from one run of text to the next.
+The lexer keeps its state from one run of text to the next. With
+`duckdb` set, it reads [DuckDB's](duckdb.temper.md) SQL instead, which
+is the same but for backtick names and a pass over Unicode spaces.
 
-    class PostgresLexer extends SqlLexer {
+    class PostgresLexer(private duckdb: Boolean) extends SqlLexer {
       private var state: Int = lexCode;
       private var depth: Int = 0;
       private var tag: String = "";
@@ -87,6 +89,8 @@ The lexer keeps its state from one run of text to the next.
       // its quote, 1 after whitespace, and 2 once that whitespace (or
       // a line comment) has a line break, so another quote goes on.
       private var afterEscape: Int = -1;
+      // DuckDB's Unicode space pass, followed alongside.
+      private pass: DuckdbSpacePass = new DuckdbSpacePass();
 
       public get inCode(): Boolean { state == lexCode }
       public get inLineComment(): Boolean { state == lexLineComment }
@@ -95,16 +99,20 @@ The lexer keeps its state from one run of text to the next.
         var problem: String? = null;
         var i = String.begin;
         let end = text.end;
+        pass.start();
         while (i < end) {
           let start = i;
           let c = text[i];
           let next = text.next(i);
           let following = if (next < end) { text[next] } else { -1 };
+          if (duckdb) {
+            problem = problem ?? duckdbSpaceProblem(text, i, c);
+          }
           if (state == lexCode && afterEscape >= 0 && !(c == char'-' && following == char'-')) {
             // Flat conditions: Temper's C# backend drops the braces of
             // an `if` alone in an `else if` branch, so a later `else`
             // would bind to it.
-            let space = isPostgresSpace(c);
+            let space = isSpace(c);
             if (c == char'\n' || c == char'\r') {
               afterEscape = 2;
             } else if (space && afterEscape == 0) {
@@ -116,11 +124,13 @@ The lexer keeps its state from one run of text to the next.
           when (state) {
             lexCode -> if (c == char'\'') {
               let escapes = afterEscape >= 0 ||
-                ((before == char'E' || before == char'e') && !isWordChar(beforeThat));
+                ((before == char'E' || before == char'e') && !isWord(beforeThat));
               afterEscape = -1;
               state = if (escapes) { lexEscapeString } else { lexSingleQuoted };
             } else if (c == char'"') {
               state = lexDoubleQuoted;
+            } else if (c == char'`' && duckdb) {
+              state = lexBackQuoted;
             } else if (c == char'-' && following == char'-') {
               state = lexLineComment;
             } else if (c == char'/' && following == char'*') {
@@ -128,7 +138,7 @@ The lexer keeps its state from one run of text to the next.
               depth = 1;
               i = next;
             } else if (c == char'$') {
-              let tagEnd = if (isWordChar(before)) { null } else { dollarTagEnd(text, next) };
+              let tagEnd = if (isWord(before)) { null } else { dollarTagEnd(text, next) };
               if (tagEnd == null) {
                 problem = problem ?? stray;
               } else {
@@ -149,6 +159,7 @@ The lexer keeps its state from one run of text to the next.
               i = next;
             };
             lexDoubleQuoted -> if (c == char'"') { state = lexCode; };
+            lexBackQuoted -> if (c == char'`') { state = lexCode; };
             lexLineComment -> if (c == char'\n' || c == char'\r') {
               state = lexCode;
               if (afterEscape >= 0) { afterEscape = 2; }
@@ -175,6 +186,9 @@ The lexer keeps its state from one run of text to the next.
           before = text[i];
           i = text.next(i);
         }
+        if (duckdb) {
+          problem = problem ?? duckdbSpaceProblem(text, end, -1);
+        }
         problem
       }
 
@@ -182,6 +196,38 @@ The lexer keeps its state from one run of text to the next.
         before = -1;
         beforeThat = -1;
         afterEscape = -1;
+      }
+
+Whitespace, and characters that can be part of a word, for this
+dialect. DuckDB turns its Unicode spaces into plain ones in code, so
+they're whitespace there.
+
+      private isSpace(c: Int): Boolean {
+        isPostgresSpace(c) || (duckdb && isDuckdbUnicodeSpace(c))
+      }
+
+      private isWord(c: Int): Boolean {
+        isWordChar(c) && !(duckdb && isDuckdbUnicodeSpace(c))
+      }
+
+For DuckDB, the problem, if any, with code point `c` at `i`, or at the
+end of the run when `c` is -1, given where the Unicode space pass is.
+Wherever this lexer is in code, the pass must be too, or the pass
+would change the wrong spaces from there on, or leave some alone. And
+a Unicode space inside a quote must be one the pass leaves alone.
+
+      private duckdbSpaceProblem(text: String, i: StringIndex, c: Int): String? {
+        pass.catchUp(text, i);
+        if (state == lexCode && !pass.inCode) {
+          duckdbOutOfStep
+        } else if (
+          isDuckdbUnicodeSpace(c) && state != lexCode && state != lexLineComment &&
+          state != lexBlockComment && pass.changes(i)
+        ) {
+          "Unicode space DuckDB would change inside a quote"
+        } else {
+          null
+        }
       }
     }
 

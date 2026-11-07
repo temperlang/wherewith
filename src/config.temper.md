@@ -1,6 +1,7 @@
 # Wherewith
 
-Writes SQL text safely for SQLite, PostgreSQL, and MySQL or MariaDB:
+Writes SQL text safely for SQLite, PostgreSQL, MySQL or MariaDB, and
+DuckDB:
 dialect-correct quoting of names and string literals, and templates
 that bind values as parameters, the same in every language.
 

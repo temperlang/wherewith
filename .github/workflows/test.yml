@@ -58,16 +58,28 @@ jobs:
           command -v lua || sudo ln -s /usr/bin/lua5.4 /usr/local/bin/lua
           lua -v
 
+      - if: matrix.backend == 'py'
+        uses: astral-sh/setup-uv@v6
+
       - name: Test
         run: temper test -b ${{ matrix.backend }}
 
-      # Round trips through real engines, with the Python library and
-      # the standard library's sqlite3.
+      # Round trips through embedded engines, with the Python library:
+      # SQLite through the standard library's sqlite3, and DuckDB
+      # through the duckdb package in uv.lock.
+      - if: matrix.backend == 'py'
+        name: Build the Python library
+        id: build-py
+        run: temper build -b py
       - if: matrix.backend == 'py'
         name: SQLite round trips
-        run: |
-          temper build -b py
-          python tests/engines/sqlite_roundtrip.py
+        run: python tests/engines/sqlite_roundtrip.py
+      # Even if SQLite's fail.
+      - if: ${{ !cancelled() && matrix.backend == 'py' && steps.build-py.outcome == 'success' }}
+        name: DuckDB round trips
+        env:
+          UV_PYTHON: "3.11"
+        run: uv run --locked tests/engines/duckdb_roundtrip.py
 
   # Round trips through PostgreSQL and MariaDB, as service containers,
   # with the Python library and the drivers in uv.lock (psycopg 3 and
