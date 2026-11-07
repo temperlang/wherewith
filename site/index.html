@@ -16,6 +16,7 @@
     <div class="wrap bar">
       <p class="brand"><a href="#">Wherewith</a></p>
       <nav aria-label="Sections">
+        <a href="#differ">Differences</a>
         <a href="#languages">Code</a>
         <a href="#why">Why</a>
         <a href="#dialects">Dialects</a>
@@ -43,6 +44,78 @@
   </section>
 
   <main>
+    <section id="differ" aria-labelledby="differ-title">
+      <div class="wrap">
+        <h2 id="differ-title">Where dialects differ</h2>
+        <p>
+          The same SQL text can read differently from one database to the
+          next. Three places it matters, with examples from Wherewith's
+          tests:
+        </p>
+        <div class="cards">
+          <article class="card" aria-labelledby="card-backslashes">
+            <h3 id="card-backslashes">Backslashes in strings</h3>
+            <p>
+              MySQL and MariaDB read <code>\</code> in a string as an
+              escape, unless <code>NO_BACKSLASH_ESCAPES</code> is on.
+              SQLite, DuckDB, and PostgreSQL (with
+              <code>standard_conforming_strings</code> on, its default)
+              read it as text.
+            </p>
+            <p>
+              <strong>If ignored,</strong> a string quoted the standard way
+              can go on past its closing quote in MySQL, since
+              <code>\'</code> is a quote inside the string.
+            </p>
+            <p>
+              <strong>Wherewith</strong> escapes backslashes only in the
+              <code>mysql</code> profile, and refuses a MySQL template
+              whose strings the two modes would end in different places.
+              Values stay parameters.
+            </p>
+<!--CARD_BACKSLASHES-->
+          </article>
+          <article class="card" aria-labelledby="card-names">
+            <h3 id="card-names">Long or odd names</h3>
+            <p>
+              PostgreSQL cuts names down to 63 bytes, without an error.
+              MySQL and MariaDB reject names over 64 characters, and
+              names ending in whitespace.
+            </p>
+            <p>
+              <strong>If ignored,</strong> two long PostgreSQL names that
+              differ only after 63 bytes name the same table.
+            </p>
+            <p>
+              <strong>Wherewith</strong> refuses such names up front, for
+              each profile. An <code>Identifier</code>, which can go in any
+              query, must suit them all.
+            </p>
+<!--CARD_NAMES-->
+          </article>
+          <article class="card" aria-labelledby="card-comments">
+            <h3 id="card-comments">Nested comments</h3>
+            <p>
+              PostgreSQL and DuckDB nest <code>/* */</code> comments, and
+              SQLite and MySQL don't, so <code>/* /* */</code> is a whole
+              comment to SQLite and MySQL, and still open to PostgreSQL and
+              DuckDB.
+            </p>
+            <p>
+              <strong>If ignored,</strong> a placeholder that looks like code
+              can be inside a comment, where the database never sees it.
+            </p>
+            <p>
+              <strong>Wherewith</strong> reads each template the way its
+              database does, and refuses a hole that would land in a
+              comment.
+            </p>
+<!--CARD_COMMENTS-->
+          </article>
+        </div>
+      </div>
+    </section>
+
     <section id="languages" aria-labelledby="languages-title">
       <div class="wrap">
         <h2 id="languages-title">One query, seven languages</h2>

@@ -23,10 +23,15 @@ The code comes from code that runs, so it can't go stale:
   Temper's.
 - The dialect table, and the placeholder styles, come from
   `docs/design.md`.
+- Each card on where dialects differ shows the rows of a test in
+  `src/query-tests.temper.md`, between a comment `card: NAME` and a
+  comment `end card`: its values, and what each dialect gives for them,
+  as the test's asserts check.
 
 A snippet is the lines between a comment `snippet: NAME` and a comment
 `end snippet`, each alone on its line, dedented. The build fails if one is
-missing, or if the page has a slot left unfilled.
+missing, or if the page has a slot left unfilled, and a card fails it if
+its lines aren't the few shapes `cards` reads.
 """
 
 import gzip
@@ -290,6 +295,102 @@ def styles(design):
     return ", ".join(markers[:-1]) + ", or " + markers[-1]
 
 
+# The cards on where dialects differ, in the page's order. Each is a test
+# in TEMPER_TEST, whose lines between `// card: NAME` and `// end card`
+# are `let` values and `assert` rows.
+CARDS = ["backslashes", "names", "comments"]
+
+# How a card names a profile's or tag's call.
+CALLS = {"quotedString": "quoteString", "quotedName": "quoteName"}
+
+TEMPER_STRING = r'"(?:[^"\\]|\\.)*"'
+
+
+def temper_string(literal):
+    """A Temper string literal's text, for the few escapes cards use."""
+    body = literal[1:-1]
+    if "${" in body:
+        raise SystemExit(f"Cards take no interpolation: {literal}")
+
+    def unescape(m):
+        if m[1] not in '\\"':
+            raise SystemExit(f"Cards take only \\\\ and \\\" escapes: {literal}")
+        return m[1]
+
+    return re.sub(r"\\(.)", unescape, body)
+
+
+def card_lines(name):
+    """A card's statements, each joined onto one line."""
+    lines = TEMPER_TEST.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == f"// card: {name}"]
+    if len(starts) != 1:
+        raise SystemExit(f"src/query-tests.temper.md needs one `// card: {name}` line.")
+    statements = []
+    pending = ""
+    for line in lines[starts[0] + 1 :]:
+        if line.strip() == "// end card":
+            if pending:
+                raise SystemExit(f"Card {name!r} has an unfinished line: {pending}")
+            return statements
+        pending = f"{pending} {line.strip()}".strip()
+        if pending.endswith(";"):
+            statements.append(pending)
+            pending = ""
+    raise SystemExit(f"Card {name!r} has no `// end card`.")
+
+
+def card(name):
+    """A card's example: for each call, the rows of what each dialect
+    gives, with dialects that give the same joined in one row."""
+    s = TEMPER_STRING
+    values = {}
+    blocks = []
+    for line in card_lines(name):
+        if m := re.fullmatch(rf"let (\w+) = ({s});", line):
+            values[m[1]] = temper_string(m[2])
+            continue
+        if m := re.fullmatch(rf"assert\((quotedString|quotedName)\(Dialect\.(\w+), (\w+)\) == ({s})\);", line):
+            call, dialect, var, want = m[1], m[2], m[3], m[4]
+            head = f'<code>{CALLS[call]}({esc(var)})</code>'
+        elif m := re.fullmatch(rf"assert\(withHole\(Dialect\.(\w+), ({s}), (\w+), ({s})\) == ({s})\);", line):
+            dialect, before, var, after, want = m[1], m[2], m[3], m[4], m[5]
+            before, after = (esc(temper_string(t)) for t in (before, after))
+            head = f'Template <code>"{before}<span class="hole">${{{esc(var)}}}</span>{after}"</code>'
+        else:
+            raise SystemExit(f"Card {name!r} can't show this line: {line}")
+        if var not in values:
+            raise SystemExit(f"Card {name!r} uses {var}, which it doesn't set.")
+        want = temper_string(want)
+        if want.startswith("refused: "):
+            result = f'<span class="refused">Refused:</span> {esc(want.removeprefix("refused: "))}'
+        else:
+            result = f"<code>{esc(want)}</code>"
+        if not blocks or blocks[-1][0] != head:
+            blocks.append((head, var, []))
+        rows = blocks[-1][2]
+        if rows and rows[-1][1] == result:
+            rows[-1][0].append(dialect)
+        else:
+            rows.append(([dialect], result))
+    if not blocks:
+        raise SystemExit(f"Card {name!r} has no rows.")
+    out = ['<div class="card-example">']
+    shown = set()
+    for head, var, rows in blocks:
+        # Each value's text, quoted so its spaces show, where it's first used.
+        where = "" if var in shown else f', where <code>{esc(var)}</code> is <code>"{esc(values[var])}"</code>'
+        shown.add(var)
+        out.append(f'<p class="card-call">{head}{where}</p>')
+        out.append('<ul class="card-rows">')
+        for dialects, result in rows:
+            who = ", ".join(f"<code>{esc(d)}</code>" for d in dialects)
+            out.append(f'<li><span class="who">{who}</span><span class="gives">{result}</span></li>')
+        out.append("</ul>")
+    out.append("</div>")
+    return "".join(out)
+
+
 def sizes(files):
     data = b"".join(f.read_bytes() for f in files)
     return len(data), len(gzip.compress(data, 9))
@@ -326,6 +427,7 @@ def main():
         "OUTPUT": f'<pre class="output" tabindex="0" aria-label="Output">{esc(text)}</pre>',
         "STYLES": styles(design),
         "DIALECTS": dialects(design),
+        **{f"CARD_{name.upper()}": card(name) for name in CARDS},
     }
     for key, value in parts.items():
         if f"<!--{key}-->" not in page:

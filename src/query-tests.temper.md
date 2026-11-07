@@ -280,3 +280,107 @@ printing what these asserts check.
       };
       assert(quoted == "hole inside a quote or comment");
     }
+
+## The site's dialect cards
+
+The site's cards on where dialects differ. The lines between a
+`card: NAME` comment and an `end card` comment go on the site: each
+`let` is a value, and each `assert` a row, showing what one dialect
+does with it. `site/build.py` reads only these shapes, and fails on
+anything else.
+
+`quotedString` and `quotedName` quote for a dialect, or say why they
+can't.
+
+    let quotedString(d: Dialect, s: String): String {
+      d.quoteString(s) orelse "refused: ${d.stringProblem(s) ?? ""}"
+    }
+
+    let quotedName(d: Dialect, s: String): String {
+      d.quoteName(s) orelse "refused: ${d.nameProblem(s) ?? ""}"
+    }
+
+`withHole` builds a template for a dialect, as its tag would: `before`,
+then `value` in a hole, then `after`. It gives the SQL, with `$1` for
+PostgreSQL and DuckDB and `?` otherwise, or says why it's refused. The
+value is always the query's one parameter.
+
+    let withHole(d: Dialect, before: String, value: String, after: String): String {
+      let b = new QueryBuilder(d);
+      b.appendSafe(before);
+      b.appendString(value);
+      b.appendSafe(after);
+      let q: Query? = b.build() orelse null;
+      if (q != null) {
+        if (q.params.length != 1 || paramText(q.params[0]) != "text:${value}") { panic(); }
+        let style = if (d.name == "postgres" || d.name == "duckdb") {
+          PlaceholderStyle.dollarNumbered
+        } else {
+          PlaceholderStyle.question
+        };
+        render(q, d, style)
+      } else {
+        "refused: ${b.templateProblem ?? ""}"
+      }
+    }
+
+MySQL and MariaDB read a backslash in a string as an escape, unless
+`NO_BACKSLASH_ESCAPES` is on, so only the `mysql` profile doubles it.
+A template's own strings can't hold a backslash before a quote or
+backslash for MySQL, since the two modes end such a string in different
+places.
+
+    test("the site's card on backslashes") {
+      // card: backslashes
+      let path = "C:\\temp\\";
+      assert(quotedString(Dialect.sqlite, path) == "'C:\\temp\\'");
+      assert(quotedString(Dialect.postgres, path) == "'C:\\temp\\'");
+      assert(quotedString(Dialect.duckdb, path) == "'C:\\temp\\'");
+      assert(quotedString(Dialect.mysqlNoBackslashEscapes, path) == "'C:\\temp\\'");
+      assert(quotedString(Dialect.mysql, path) == "'C:\\\\temp\\\\'");
+      assert(withHole(Dialect.sqlite, "SELECT ", path, " = 'C:\\temp\\'") == "SELECT ? = 'C:\\temp\\'");
+      assert(withHole(Dialect.mysql, "SELECT ", path, " = 'C:\\temp\\'") ==
+        "refused: backslash before a quote or backslash in a string");
+      // end card
+      assert(withHole(Dialect.postgres, "SELECT ", path, " = 'C:\\temp\\'") == "SELECT $1 = 'C:\\temp\\'");
+    }
+
+PostgreSQL cuts names down to 63 bytes, so two long names that differ
+only after that would name the same thing. MySQL and MariaDB reject
+names over 64 characters, and names ending in whitespace. Each profile
+refuses what its database would change or reject, and an `Identifier`,
+which can go in any query, must suit every one.
+
+    test("the site's card on names") {
+      // card: names
+      let long = "revenue_by_customer_segment_and_acquisition_channel_and_month_v1";
+      let padded = "total ";
+      assert(quotedName(Dialect.postgres, long) == "refused: name longer than 63 UTF-8 bytes");
+      assert(quotedName(Dialect.mysql, padded) == "refused: name ends in whitespace");
+      assert(quotedName(Dialect.mysqlNoBackslashEscapes, padded) == "refused: name ends in whitespace");
+      assert(quotedName(Dialect.sqlite, padded) == "\"total \"");
+      assert(quotedName(Dialect.postgres, padded) == "\"total \"");
+      assert(quotedName(Dialect.duckdb, padded) == "\"total \"");
+      // end card
+      assert(quotedName(Dialect.mysql, long) == "`${long}`");
+      assert(identifierProblem(long) == "name longer than 63 UTF-8 bytes");
+      assert(identifierProblem(padded) == "name ends in whitespace");
+    }
+
+PostgreSQL and DuckDB nest block comments, and SQLite and MySQL don't,
+so the same text can leave a hole in a comment for one and in code for
+the other. Each dialect reads it its own way.
+
+    test("the site's card on comments") {
+      // card: comments
+      let name = "Ann";
+      assert(withHole(Dialect.sqlite, "SELECT 1 /* /* */, ", name, "") == "SELECT 1 /* /* */, ?");
+      assert(withHole(Dialect.mysql, "SELECT 1 /* /* */, ", name, "") == "SELECT 1 /* /* */, ?");
+      assert(withHole(Dialect.postgres, "SELECT 1 /* /* */, ", name, "") ==
+        "refused: hole inside a quote or comment");
+      assert(withHole(Dialect.duckdb, "SELECT 1 /* /* */, ", name, "") ==
+        "refused: hole inside a quote or comment");
+      // end card
+      assert(withHole(Dialect.postgres, "SELECT 1 /* /* */ */, ", name, "") == "SELECT 1 /* /* */ */, $1");
+      assert(withHole(Dialect.duckdb, "SELECT 1 /* /* */ */, ", name, "") == "SELECT 1 /* /* */ */, $1");
+    }

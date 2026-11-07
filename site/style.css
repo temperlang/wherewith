@@ -21,6 +21,8 @@
   --name: #3d4fc4;
   --param: #0b7a72;
   --param-bg: #e6f5f3;
+  /* What a card's dialect refuses. */
+  --refused: #b42318;
   color-scheme: light dark;
 }
 
@@ -49,6 +51,7 @@
     --name: #9aa8ff;
     --param: #5fd6c8;
     --param-bg: #12302d;
+    --refused: #ff9d8f;
   }
 }
 
@@ -431,6 +434,87 @@ pre code {
 .reasons strong {
   display: block;
   margin-bottom: 0.2rem;
+}
+
+/* Where dialects differ: a card each, with what each dialect does. */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.card {
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--border);
+  border-top: 4px solid var(--accent);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  font-size: 0.95rem;
+}
+
+.card h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1.1rem;
+}
+
+.card p {
+  margin: 0 0 0.5rem;
+}
+
+.card-example {
+  margin-top: 0.25rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.4rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+
+.card .card-call {
+  margin: 0 0 0.2rem;
+  color: var(--muted);
+}
+
+.card-call code {
+  color: var(--text);
+}
+
+.card-rows {
+  list-style: none;
+  margin: 0 0 0.4rem;
+  padding: 0;
+}
+
+.card-rows:last-child {
+  margin-bottom: 0;
+}
+
+.card-rows li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.5rem;
+  padding: 0.15rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.card-rows .who {
+  color: var(--muted);
+}
+
+.card-rows .who::after {
+  content: ":";
+}
+
+.card-rows .gives code {
+  color: var(--param);
+  font-weight: 600;
+}
+
+.refused {
+  color: var(--refused);
+  font-weight: 650;
 }
 
 /* The dialect table. */
