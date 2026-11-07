@@ -1,6 +1,4 @@
-# A GitHub Pages workflow for the site, not yet enabled. To publish, move
-# it to .github/workflows/site.yml and set Settings > Pages > Source to
-# GitHub Actions. Until then, nothing here runs.
+# Builds the site and publishes it to GitHub Pages from main.
 name: site
 
 on:
