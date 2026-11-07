@@ -1,4 +1,4 @@
-"""Wherewith's example, from Python: one query, rendered for each database.
+"""Wherewith's example, from Python: the same query for each database.
 
 The same example exists for each language Wherewith supports, and they all
 print the same text. See demos/README.md for how to run them.
@@ -8,18 +8,23 @@ print the same text. See demos/README.md for how to run them.
 from wherewith import Dialect, Identifier, PlaceholderStyle, QueryBuilder
 
 name = "Robert'); DROP TABLE students; --"
-b = QueryBuilder(Dialect.postgres)
-b.append_safe("SELECT id FROM ")
-b.append_identifier(Identifier.named("students"))
-b.append_safe(" WHERE name = ")
-b.append_string(name)
-q = b.build()
+
+
+def find(dialect, style):
+    """The query for one database, checked with its rules, rendered for it."""
+    b = QueryBuilder(dialect)
+    b.append_safe("SELECT id FROM ")
+    b.append_identifier(Identifier.named("students"))
+    b.append_safe(" WHERE name = ")
+    b.append_string(name)
+    return b.build().render(dialect, style)
+
 
 # Each database's quoting, with the placeholders its driver takes.
-print("sqlite: " + q.render(Dialect.sqlite, PlaceholderStyle.question).sql)
-print("postgres: " + q.render(Dialect.postgres, PlaceholderStyle.dollar_numbered).sql)
-print("mysql: " + q.render(Dialect.mysql, PlaceholderStyle.percent_s).sql)
-r = q.render(Dialect.duckdb, PlaceholderStyle.dollar_numbered)
+print("sqlite: " + find(Dialect.sqlite, PlaceholderStyle.question).sql)
+print("postgres: " + find(Dialect.postgres, PlaceholderStyle.dollar_numbered).sql)
+print("mysql: " + find(Dialect.mysql, PlaceholderStyle.percent_s).sql)
+r = find(Dialect.duckdb, PlaceholderStyle.dollar_numbered)
 print("duckdb: " + r.sql)
 # The name travels apart from the SQL, for the driver to bind.
 print("params: " + str(len(r.params)))

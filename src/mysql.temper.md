@@ -36,6 +36,11 @@ let r = q.render(Dialect.mysql, PlaceholderStyle.question) orelse panic();
 r.sql; // SELECT id FROM t WHERE a = ?
 ```
 
+Its queries render for both profiles, `Dialect.mysql` and
+`Dialect.mysqlNoBackslashEscapes`, since the lexer refuses text the two
+modes read differently; a `QueryBuilder` for either profile checks the
+same way.
+
 Most drivers take `?` (`PlaceholderStyle.question`): Connector/C,
 JDBC, MySqlConnector, `mysql2`, MariaDB Connector/Python, and Rust's
 `mysql` and `sqlx`. PyMySQL and mysqlclient take `%s`

@@ -47,9 +47,9 @@ Whether `s` has `part` anywhere in it.
       let q = sqlite"SELECT * FROM t WHERE a = ${1} AND (${inner}) LIMIT ${4}";
       assert(render(q, Dialect.sqlite, PlaceholderStyle.question) ==
         "SELECT * FROM t WHERE a = ? AND (b = ? OR c = ?) LIMIT ?");
-      assert(render(q, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+      assert(render(q, Dialect.sqlite, PlaceholderStyle.dollarNumbered) ==
         "SELECT * FROM t WHERE a = $1 AND (b = $2 OR c = $3) LIMIT $4");
-      assert(render(q, Dialect.mysql, PlaceholderStyle.percentS) ==
+      assert(render(q, Dialect.sqlite, PlaceholderStyle.percentS) ==
         "SELECT * FROM t WHERE a = %s AND (b = %s OR c = %s) LIMIT %s");
       assert(render(q, Dialect.sqlite, PlaceholderStyle.atNamed) ==
         "SELECT * FROM t WHERE a = @p1 AND (b = @p2 OR c = @p3) LIMIT @p4");
@@ -59,7 +59,7 @@ Whether `s` has `part` anywhere in it.
       for (var i = 0; i < 4; i += 1) {
         assert(paramText(q.params[i]) == "int:${(i + 1).toString()}");
       }
-      let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+      let r = q.render(Dialect.sqlite, PlaceholderStyle.dollarNumbered) orelse panic();
       assert(r.params.length == 4);
       assert(PlaceholderStyle.dollarNumbered.placeholder(12) == "$12");
     }
@@ -112,7 +112,7 @@ quotes, where a driver looking for names could misread it.
 
 ## Names
 
-Names are quoted when rendered, so one query works for every dialect.
+Names are quoted when rendered, for the query's dialect.
 
     test("names quoted per dialect") {
       let schema = Identifier.named("my schema") orelse panic();
@@ -120,12 +120,14 @@ Names are quoted when rendered, so one query works for every dialect.
       let q = sqlite"SELECT * FROM ${schema}.${table} WHERE x = ${1}";
       assert(render(q, Dialect.sqlite, PlaceholderStyle.question) ==
         "SELECT * FROM \"my schema\".\"a\"\"b`c\" WHERE x = ?");
-      assert(render(q, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+      let pg = postgres"SELECT * FROM ${schema}.${table} WHERE x = ${1}";
+      assert(render(pg, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
         "SELECT * FROM \"my schema\".\"a\"\"b`c\" WHERE x = $1");
-      assert(render(q, Dialect.mysql, PlaceholderStyle.question) ==
+      let my = mysql"SELECT * FROM ${schema}.${table} WHERE x = ${1}";
+      assert(render(my, Dialect.mysql, PlaceholderStyle.question) ==
         "SELECT * FROM `my schema`.`a\"b``c` WHERE x = ?");
       // Plain code makes the same query.
-      let b = new QueryBuilder(Dialect.sqlite);
+      let b = new QueryBuilder(Dialect.mysql);
       b.appendSafe("SELECT * FROM ");
       b.appendIdentifier(schema);
       b.appendSafe(".");
@@ -134,7 +136,7 @@ Names are quoted when rendered, so one query works for every dialect.
       b.appendValue(new SqlInt(1.toInt64()));
       let built = b.build() orelse panic();
       assert(render(built, Dialect.mysql, PlaceholderStyle.question) ==
-        render(q, Dialect.mysql, PlaceholderStyle.question));
+        render(my, Dialect.mysql, PlaceholderStyle.question));
     }
 
 ## Spacing around holes
@@ -147,7 +149,7 @@ would otherwise run into the text beside it.
       let q = postgres"SELECT x${1}0, ${a}${a}, -${-1}, ${2}'s', (${3}), [${4}]";
       assert(render(q, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
         "SELECT x $1 0, \"a\" \"a\", - $2, $3 's', ($4), [$5]");
-      assert(render(q, Dialect.sqlite, PlaceholderStyle.question) ==
+      assert(render(q, Dialect.postgres, PlaceholderStyle.question) ==
         "SELECT x ? 0, \"a\" \"a\", - ?, ? 's', (?), [?]");
       let u = Identifier.named("u") orelse panic();
       let pg = postgres"SELECT U&${u}";
@@ -156,7 +158,8 @@ would otherwise run into the text beside it.
 
 ## Values
 
-Values never appear in the SQL text, in any style or dialect.
+Values never appear in the SQL text, in any style or dialect, each
+rendered for the dialects it's checked for.
 
     test("values never in the text") {
       let secret = "zq'\"`\\%?$1@p1:p1-- /*";
@@ -171,14 +174,115 @@ Values never appear in the SQL text, in any style or dialect.
         assert(q.params.length == 2);
         for (let d of allDialects()) {
           for (let style of allStyles()) {
-            let r = q.render(d, style) orelse panic();
-            assert(!contains(r.sql, "zq"));
-            assert(r.params.length == 2);
-            assert(paramText(r.params[0]) == "text:${secret}");
+            let r: RenderedQuery? = q.render(d, style) orelse null;
+            if (r != null) {
+              assert(!contains(r.sql, "zq"));
+              assert(r.params.length == 2);
+              assert(paramText(r.params[0]) == "text:${secret}");
+            } else {
+              assert(q.renderProblem(d, style) != null);
+              assert(d.name != q.dialect.name);
+            }
           }
         }
       }
       assert(contains("abc", "bc"));
+    }
+
+## A query's dialect
+
+A query remembers the dialect whose rules checked its text, and renders
+only for that dialect, since the same text can read differently in
+another. In PostgreSQL, `#` is an operator (bitwise XOR), but in MySQL
+it starts a comment, which would hide the hole.
+
+    test("a query renders only for its dialect") {
+      let x = 1;
+      let q = postgres"SELECT 1 # ${x}";
+      assert(q.dialect.name == "postgres");
+      assert(render(q, Dialect.postgres, PlaceholderStyle.question) == "SELECT 1 # ?");
+      assert(render(q, Dialect.mysql, PlaceholderStyle.question) == "(fails)");
+      assert(q.renderProblem(Dialect.mysql, PlaceholderStyle.question) == "query checked for postgres, not mysql");
+      assert(q.renderProblem(Dialect.postgres, PlaceholderStyle.question) == null);
+      assert(q.renderProblem(Dialect.postgres, PlaceholderStyle.colonNamed) == null);
+      let mine = checkTemplate(Dialect.mysql) { b =>
+        b.appendSafe("SELECT 1 # ");
+        b.appendInt(x);
+      };
+      assert(mine == "hole inside a quote or comment");
+      // PostgreSQL and DuckDB lex alike, but not quite, so they don't mix.
+      assert(render(q, Dialect.duckdb, PlaceholderStyle.question) == "(fails)");
+      assert(sqlite"SELECT 1".dialect.name == "sqlite");
+      assert(mysql"SELECT 1".dialect.name == "mysql");
+      assert(duckdb"SELECT 1".dialect.name == "duckdb");
+      let named = sqlite"SELECT '12:30', ${x}";
+      assert(named.renderProblem(Dialect.sqlite, PlaceholderStyle.colonNamed) == "text has :, which colonNamed uses");
+      assert(named.renderProblem(Dialect.postgres, PlaceholderStyle.colonNamed) == "query checked for sqlite, not postgres");
+    }
+
+Both MySQL profiles check templates with the same lexer, which already
+refuses text the two modes read differently, so a query for either
+renders for both.
+
+    test("the MySQL profiles share their queries") {
+      let col = Identifier.named("a`b") orelse panic();
+      let q = mysql"SELECT ${col}, 'it''s' FROM t WHERE a = ${1}";
+      let want = "SELECT `a``b`, 'it''s' FROM t WHERE a = ?";
+      assert(render(q, Dialect.mysql, PlaceholderStyle.question) == want);
+      assert(render(q, Dialect.mysqlNoBackslashEscapes, PlaceholderStyle.question) == want);
+      let b = new QueryBuilder(Dialect.mysqlNoBackslashEscapes);
+      b.appendSafe("SELECT ");
+      b.appendIdentifier(col);
+      b.appendSafe(", 'it''s' FROM t WHERE a = ");
+      b.appendInt(1);
+      let nbe = b.build() orelse panic();
+      assert(nbe.dialect.name == "mysqlNoBackslashEscapes");
+      assert(render(nbe, Dialect.mysql, PlaceholderStyle.question) == want);
+      assert(render(nbe, Dialect.mysqlNoBackslashEscapes, PlaceholderStyle.question) == want);
+      assert(render(nbe, Dialect.sqlite, PlaceholderStyle.question) == "(fails)");
+      // Text the two modes end in different places is refused for both.
+      for (let d of [Dialect.mysql, Dialect.mysqlNoBackslashEscapes]) {
+        let refused = checkTemplate(d) { b =>
+          b.appendSafe("SELECT 'a\\', ");
+          b.appendInt(1);
+          b.appendSafe(" -- '");
+        };
+        assert(refused == "backslash before a quote or backslash in a string");
+      }
+    }
+
+A nested query must be for a dialect the builder's checks cover, the
+same rule as for rendering; tags panic, as for any template mistake.
+
+    test("nested queries keep to one dialect") {
+      let pg = postgres"1 # ${1}";
+      let into = checkTemplate(Dialect.mysql) { b =>
+        b.appendSafe("SELECT ");
+        b.appendQuery(pg);
+      };
+      assert(into == "nested query checked for postgres, not mysql");
+      let same = checkTemplate(Dialect.postgres) { b =>
+        b.appendSafe("SELECT ");
+        b.appendQuery(pg);
+      };
+      assert(same == "ok");
+      let my = mysql"${1}";
+      let shared = checkTemplate(Dialect.mysqlNoBackslashEscapes) { b =>
+        b.appendSafe("SELECT ");
+        b.appendQuery(my);
+      };
+      assert(shared == "ok");
+      for (let d of allDialects()) {
+        let q = valueQuery(d, "v");
+        for (let outer of allDialects()) {
+          let got = checkTemplate(outer) { b =>
+            b.appendSafe("SELECT ");
+            b.appendQuery(q);
+          };
+          let mysqls = hasAt(d.name, String.begin, "mysql") && hasAt(outer.name, String.begin, "mysql");
+          assert((got == "ok") == (d.name == outer.name || mysqls));
+        }
+      }
     }
 
 ## Parts from holes
@@ -198,6 +302,14 @@ own parts. Only `Query.unchecked` can put arbitrary text in a query.
         });
       }
       kinds.join(" ", fn (s: String): String { s })
+    }
+
+`valueQuery` is a query for a dialect that's just one value.
+
+    let valueQuery(d: Dialect, value: String): Query {
+      let b = new QueryBuilder(d);
+      b.appendString(value);
+      b.build() orelse panic()
     }
 
     test("holes never become text") {
@@ -223,11 +335,11 @@ own parts. Only `Query.unchecked` can put arbitrary text in a query.
         b.appendSafe(" AND b = ");
         b.appendValue(new SqlText(evil));
         b.appendSafe(", ");
-        b.appendQuery(inner);
+        b.appendQuery(valueQuery(d, evil));
         assert(partKinds(b.build() orelse panic()) == "text name text param text param text param");
       }
       let text: QueryPart = new QueryText("SELECT 'zq'");
-      let raw = Query.unchecked([text]);
+      let raw = Query.unchecked(Dialect.sqlite, [text]);
       assert(partKinds(raw) == "LEAK");
       assert(raw.params.isEmpty);
     }
@@ -240,7 +352,7 @@ params as they were, and consistent.
       let parts = new ListBuilder<QueryPart>();
       parts.add(new QueryText("SELECT "));
       parts.add(new QueryParam(new SqlInt(1.toInt64())));
-      let q = Query.unchecked(parts);
+      let q = Query.unchecked(Dialect.sqlite, parts);
       parts.add(new QueryText(", "));
       parts.add(new QueryParam(new SqlInt(2.toInt64())));
       parts.set(0, new QueryText("DELETE "));
@@ -248,31 +360,39 @@ params as they were, and consistent.
       assert(q.params.length == 1);
       assert(paramText(q.params[0]) == "int:1");
       assert(qmarks(q) == "SELECT ?");
-      let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+      assert(q.dialect.name == "sqlite");
+      let r = q.render(Dialect.sqlite, PlaceholderStyle.dollarNumbered) orelse panic();
       assert(r.sql == "SELECT $1");
       assert(r.params.length == 1);
     }
 
 ## The site's example
 
-The site's opening example: one template, rendered for each database.
-The lines between the `snippet` comments go on the site, and the
-demos in `demos/example/` build the same query from each language,
-printing what these asserts check.
+The site's opening example: the same template for each database,
+checked with its rules, and rendered for it. The lines between the
+`snippet` comments go on the site, and the demos in `demos/example/`
+build the same queries from each language, printing what these asserts
+check.
 
     test("the site's example") {
       // snippet: temper
       let name = "Robert'); DROP TABLE students; --";
       let students = Identifier.named("students") orelse panic();
-      let q = postgres"SELECT id FROM ${students} WHERE name = ${name}";
-      let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+      let forSqlite = sqlite"SELECT id FROM ${students} WHERE name = ${name}";
+      let forPostgres = postgres"SELECT id FROM ${students} WHERE name = ${name}";
+      let forMysql = mysql"SELECT id FROM ${students} WHERE name = ${name}";
+      let forDuckdb = duckdb"SELECT id FROM ${students} WHERE name = ${name}";
+      let r = forPostgres.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
       // end snippet
       assert(r.sql == "SELECT id FROM \"students\" WHERE name = $1");
       assert(r.params.length == 1);
       assert(paramText(r.params[0]) == "text:${name}");
-      assert(qmarks(q) == "SELECT id FROM \"students\" WHERE name = ?");
-      assert(render(q, Dialect.mysql, PlaceholderStyle.percentS) == "SELECT id FROM `students` WHERE name = %s");
-      assert(render(q, Dialect.duckdb, PlaceholderStyle.dollarNumbered) == "SELECT id FROM \"students\" WHERE name = $1");
+      assert(qmarks(forSqlite) == "SELECT id FROM \"students\" WHERE name = ?");
+      assert(render(forMysql, Dialect.mysql, PlaceholderStyle.percentS) ==
+        "SELECT id FROM `students` WHERE name = %s");
+      assert(render(forDuckdb, Dialect.duckdb, PlaceholderStyle.dollarNumbered) ==
+        "SELECT id FROM \"students\" WHERE name = $1");
+      assert(render(forPostgres, Dialect.mysql, PlaceholderStyle.percentS) == "(fails)");
       let quoted = checkTemplate(Dialect.postgres) { b =>
         b.appendSafe("SELECT id FROM students WHERE name = '");
         b.appendString(name);

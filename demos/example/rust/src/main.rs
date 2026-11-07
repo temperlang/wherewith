@@ -1,25 +1,29 @@
-//! Wherewith's example, from Rust: one query, rendered for each database.
+//! Wherewith's example, from Rust: the same query for each database.
 //!
 //! The same example exists for each language Wherewith supports, and they all
 //! print the same text. See demos/README.md for how to run them.
 
 // snippet: example
-use wherewith::{Dialect, Identifier, PlaceholderStyle, QueryBuilder};
+use wherewith::{Dialect, Identifier, PlaceholderStyle, QueryBuilder, RenderedQuery};
 
-fn main() -> temper_core::Result<()> {
-    let name = "Robert'); DROP TABLE students; --";
-    let b = QueryBuilder::new(Dialect::postgres());
+/// The query for one database, checked with its rules, rendered for it.
+fn find(name: &str, dialect: Dialect, style: PlaceholderStyle) -> temper_core::Result<RenderedQuery> {
+    let b = QueryBuilder::new(dialect.clone());
     b.append_safe("SELECT id FROM ");
     b.append_identifier(Identifier::named("students")?);
     b.append_safe(" WHERE name = ");
     b.append_string(Some(name));
-    let q = b.build()?;
+    b.build()?.render(dialect, style)
+}
+
+fn main() -> temper_core::Result<()> {
+    let name = "Robert'); DROP TABLE students; --";
 
     // Each database's quoting, with the placeholders its driver takes.
-    println!("sqlite: {}", q.render(Dialect::sqlite(), PlaceholderStyle::question())?.sql());
-    println!("postgres: {}", q.render(Dialect::postgres(), PlaceholderStyle::dollar_numbered())?.sql());
-    println!("mysql: {}", q.render(Dialect::mysql(), PlaceholderStyle::percent_s())?.sql());
-    let r = q.render(Dialect::duckdb(), PlaceholderStyle::dollar_numbered())?;
+    println!("sqlite: {}", find(name, Dialect::sqlite(), PlaceholderStyle::question())?.sql());
+    println!("postgres: {}", find(name, Dialect::postgres(), PlaceholderStyle::dollar_numbered())?.sql());
+    println!("mysql: {}", find(name, Dialect::mysql(), PlaceholderStyle::percent_s())?.sql());
+    let r = find(name, Dialect::duckdb(), PlaceholderStyle::dollar_numbered())?;
     println!("duckdb: {}", r.sql());
     // The name travels apart from the SQL, for the driver to bind.
     println!("params: {}", r.params().len());

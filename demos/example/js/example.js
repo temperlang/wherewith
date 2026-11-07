@@ -1,4 +1,4 @@
-// Wherewith's example, from JavaScript: one query, rendered for each database.
+// Wherewith's example, from JavaScript: the same query for each database.
 //
 // The same example exists for each language Wherewith supports, and they all
 // print the same text. See demos/README.md for how to run them.
@@ -7,18 +7,22 @@
 import { Dialect, Identifier, PlaceholderStyle, QueryBuilder } from "wherewith";
 
 const name = "Robert'); DROP TABLE students; --";
-const b = new QueryBuilder(Dialect.postgres);
-b.appendSafe("SELECT id FROM ");
-b.appendIdentifier(Identifier.named("students"));
-b.appendSafe(" WHERE name = ");
-b.appendString(name);
-const q = b.build();
+
+// The query for one database, checked with its rules, rendered for it.
+function find(dialect, style) {
+  const b = new QueryBuilder(dialect);
+  b.appendSafe("SELECT id FROM ");
+  b.appendIdentifier(Identifier.named("students"));
+  b.appendSafe(" WHERE name = ");
+  b.appendString(name);
+  return b.build().render(dialect, style);
+}
 
 // Each database's quoting, with the placeholders its driver takes.
-console.log("sqlite: " + q.render(Dialect.sqlite, PlaceholderStyle.question).sql);
-console.log("postgres: " + q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql);
-console.log("mysql: " + q.render(Dialect.mysql, PlaceholderStyle.percentS).sql);
-const r = q.render(Dialect.duckdb, PlaceholderStyle.dollarNumbered);
+console.log("sqlite: " + find(Dialect.sqlite, PlaceholderStyle.question).sql);
+console.log("postgres: " + find(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql);
+console.log("mysql: " + find(Dialect.mysql, PlaceholderStyle.percentS).sql);
+const r = find(Dialect.duckdb, PlaceholderStyle.dollarNumbered);
 console.log("duckdb: " + r.sql);
 // The name travels apart from the SQL, for the driver to bind.
 console.log("params: " + r.params.length);

@@ -19,8 +19,8 @@ The code comes from code that runs, so it can't go stale:
 - Each language's code is the `snippet: example` part of its program in
   `demos/example/`, and the output shown is `demos/example/expected.txt`,
   which CI checks every program prints (`demos/run.py`).
-- The opening's rendered queries are that output, and its template is the
-  Temper's.
+- The opening's rendered queries are that output, and its templates, one
+  per database, are the Temper's.
 - The dialect table, and the placeholder styles, come from
   `docs/design.md`.
 - Each card on where dialects differ shows the rows of a test in
@@ -176,12 +176,16 @@ def template_html(line):
 
 
 def hero(temper, rendered, rest):
-    """The opening: the Temper template, the hostile value, and the query
-    as each database gets it."""
-    template = next((line for line in temper.splitlines() if re.search(r'= \w+"', line)), None)
+    """The opening: the hostile value, then each database's Temper
+    template and the query its driver gets. Each tag is named for its
+    dialect, so a template only renders for its own database."""
+    templates = {}
+    for line in temper.splitlines():
+        if m := re.search(r'= (\w+)"', line):
+            templates[m[1]] = line
     value = re.search(r'let name = "(.*)";', temper)
-    if not template or not value:
-        raise SystemExit("The Temper snippet needs a template and a `let name`.")
+    if set(templates) != set(DIALECTS) or not value:
+        raise SystemExit("The Temper snippet needs a template for each database and a `let name`.")
     if rest["params"] != "1":
         raise SystemExit("The example should have one parameter.")
     rows = []
@@ -189,17 +193,15 @@ def hero(temper, rendered, rest):
         placeholder = sql.rsplit(" ", 1)[1]
         rows.append(
             f'<li><span class="db">{esc(DIALECTS[key])}</span>'
-            f'<span class="style">with <code>{esc(placeholder)}</code></span>'
-            f'<code class="sql">{sql_html(sql)}</code></li>'
+            f'<code class="template">{template_html(templates[key])}</code>'
+            f'<span class="out"><span class="arrow" aria-label="renders as">→</span> '
+            f'<code class="sql">{sql_html(sql)}</code> '
+            f'<span class="style">with <code>{esc(placeholder)}</code></span></span></li>'
         )
     return (
         '<div class="hero-demo">'
-        '<div class="given">'
-        f'<p class="label">Written once</p><p class="template"><code>{template_html(template)}</code></p>'
-        f'<p class="value"><span class="label">where <code>name</code> is</span> <code>"{esc(value[1])}"</code></p>'
-        "</div>"
-        '<p class="arrow" aria-hidden="true">↓</p>'
-        '<p class="label">Rendered for each database</p>'
+        f'<p class="value"><span class="label">Where <code>name</code> is</span> <code>"{esc(value[1])}"</code></p>'
+        '<p class="label">Each database&#8217;s template, checked with its rules, and the query its driver gets</p>'
         f'<ul class="rendered">{"".join(rows)}</ul>'
         f'<p class="params"><span class="q-param-key">Parameter 1</span> <code>"{esc(value[1])}"</code>'
         ' <span class="label">sent apart, for the driver to bind</span></p>'

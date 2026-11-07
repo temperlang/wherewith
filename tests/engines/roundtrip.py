@@ -518,7 +518,7 @@ def unchecked_query(d, names: dict, pieces: list[str], value: str):
             parts.append(ww.QueryText(name) if isinstance(name, str) else ww.QueryName(name))
         else:
             parts.append(ww.QueryText(p))
-    return ww.Query.unchecked(parts)
+    return ww.Query.unchecked(d, parts)
 
 
 # 3. Parameters

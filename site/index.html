@@ -108,7 +108,8 @@
             <p>
               <strong>Wherewith</strong> reads each template the way its
               database does, and refuses a hole that would land in a
-              comment.
+              comment. A query renders only for the database whose rules
+              checked it.
             </p>
 <!--CARD_COMMENTS-->
           </article>
@@ -120,9 +121,9 @@
       <div class="wrap">
         <h2 id="languages-title">One query, seven languages</h2>
         <p>
-          In Temper, the query is a tagged template, checked with
-          PostgreSQL's rules. Every language gets the same library, built
-          from it, and builds the same query with a
+          In Temper, each database's query is a tagged template, checked
+          with that database's rules. Every language gets the same
+          library, built from it, and builds the same queries with a
           <code>QueryBuilder</code>:
         </p>
 <!--TEMPER-->
@@ -164,10 +165,10 @@
             Wherewith says what's wrong instead of building the query.
           </li>
           <li>
-            <strong>One query, four databases.</strong>
-            The same query renders for SQLite, PostgreSQL, MySQL and
-            MariaDB, and DuckDB, with whichever placeholder style the driver
-            takes: <!--STYLES-->.
+            <strong>Four databases, each read its own way.</strong>
+            Queries for SQLite, PostgreSQL, MySQL and MariaDB, and DuckDB
+            are each checked with their database's rules, and render with
+            whichever placeholder style the driver takes: <!--STYLES-->.
           </li>
           <li>
             <strong>Tested against real engines.</strong>

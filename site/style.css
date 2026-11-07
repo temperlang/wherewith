@@ -208,12 +208,8 @@ h2 {
 }
 
 .template {
-  margin: 0.15rem 0 0.35rem !important;
-}
-
-.template code {
-  font-size: clamp(0.95rem, 2.6vw, 1.2rem);
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .template .tag {
@@ -227,24 +223,26 @@ h2 {
   padding: 0 0.1em;
 }
 
+.value {
+  margin-bottom: 0.6rem !important;
+}
+
 .value code {
   color: var(--hole);
 }
 
 .arrow {
-  margin: 0.35rem 0 0.1rem !important;
   color: var(--muted);
-  font-size: 1.3rem;
-  line-height: 1;
 }
 
+/* Each database: its name, beside its template over its query. */
 .rendered {
   list-style: none;
   margin: 0.3rem 0 0.6rem;
   padding: 0;
   display: grid;
-  grid-template-columns: max-content max-content minmax(0, 1fr);
-  gap: 0.35rem 0.9rem;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.55rem 0.9rem;
   align-items: baseline;
 }
 
@@ -252,11 +250,18 @@ h2 {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: subgrid;
+  row-gap: 0.2rem;
   align-items: baseline;
 }
 
 .rendered .db {
   font-weight: 650;
+  grid-row: span 2;
+}
+
+.rendered .template,
+.rendered .out {
+  grid-column: 2;
 }
 
 .rendered .style {
@@ -265,6 +270,9 @@ h2 {
 }
 
 .rendered .sql {
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
   padding: 0.15rem 0.5rem;
   border-radius: 0.35rem;
   background: var(--code-bg);
@@ -297,20 +305,20 @@ h2 {
   padding: 0.05rem 0.4rem;
 }
 
-/* On a phone, each database over its SQL. */
+/* On a phone, each database over its template and query. */
 @media (max-width: 40rem) {
   .rendered {
-    grid-template-columns: max-content minmax(0, 1fr);
-    gap: 0.1rem 0.6rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.7rem;
   }
 
-  .rendered .style {
-    justify-self: start;
+  .rendered .db {
+    grid-row: auto;
   }
 
-  .rendered .sql {
-    grid-column: 1 / -1;
-    margin-bottom: 0.4rem;
+  .rendered .template,
+  .rendered .out {
+    grid-column: 1;
   }
 }
 

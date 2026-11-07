@@ -1,4 +1,4 @@
-// Wherewith's example, from C++: one query, rendered for each database.
+// Wherewith's example, from C++: the same query for each database.
 //
 // The same example exists for each language Wherewith supports, and they all
 // print the same text. See demos/README.md for how to run them.
@@ -16,18 +16,22 @@ using wherewith::QueryBuilder;
 
 int main() {
   std::string name = "Robert'); DROP TABLE students; --";
-  auto b = QueryBuilder::make(Dialect::postgres());
-  b->appendSafe("SELECT id FROM ");
-  b->appendIdentifier(Identifier::named("students"));
-  b->appendSafe(" WHERE name = ");
-  b->appendString(name);
-  auto q = b->build();
+
+  // The query for one database, checked with its rules, rendered for it.
+  auto find = [&](auto dialect, auto style) {
+    auto b = QueryBuilder::make(dialect);
+    b->appendSafe("SELECT id FROM ");
+    b->appendIdentifier(Identifier::named("students"));
+    b->appendSafe(" WHERE name = ");
+    b->appendString(name);
+    return b->build()->render(dialect, style);
+  };
 
   // Each database's quoting, with the placeholders its driver takes.
-  std::cout << "sqlite: " << q->render(Dialect::sqlite(), PlaceholderStyle::question())->sql << "\n";
-  std::cout << "postgres: " << q->render(Dialect::postgres(), PlaceholderStyle::dollarNumbered())->sql << "\n";
-  std::cout << "mysql: " << q->render(Dialect::mysql(), PlaceholderStyle::percentS())->sql << "\n";
-  auto r = q->render(Dialect::duckdb(), PlaceholderStyle::dollarNumbered());
+  std::cout << "sqlite: " << find(Dialect::sqlite(), PlaceholderStyle::question())->sql << "\n";
+  std::cout << "postgres: " << find(Dialect::postgres(), PlaceholderStyle::dollarNumbered())->sql << "\n";
+  std::cout << "mysql: " << find(Dialect::mysql(), PlaceholderStyle::percentS())->sql << "\n";
+  auto r = find(Dialect::duckdb(), PlaceholderStyle::dollarNumbered());
   std::cout << "duckdb: " << r->sql << "\n";
   // The name travels apart from the SQL, for the driver to bind.
   std::cout << "params: " << r->params->size() << "\n";

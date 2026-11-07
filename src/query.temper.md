@@ -1,12 +1,12 @@
 # Queries
 
 A *Query* is SQL with its values kept apart: text, parameters, and
-names, in order. It doesn't belong to one database or one driver.
-Rendering it takes a [Dialect](core.temper.md), which quotes its names,
-and a *PlaceholderStyle*, which writes its parameters the way the
-driver expects. Tags (`sqlite`, `postgres`, `mysql`, and `duckdb`) and
-plain code both make queries with a `QueryBuilder`, which checks the text with
-one database's lexing rules.
+names, in order. Tags (`sqlite`, `postgres`, `mysql`, and `duckdb`)
+and plain code both make queries with a `QueryBuilder`, which checks
+the text with one database's lexing rules, and the query remembers that
+[Dialect](core.temper.md). Rendering it quotes its names for the
+dialect, and writes its parameters in a *PlaceholderStyle*, the way the
+driver expects.
 
 ```temper inert
 let table = Identifier.named("students") orelse panic();
@@ -32,6 +32,7 @@ in place, so its parameters are numbered with the rest.
 
 ## Query
 
+`dialect` is the dialect whose lexing rules checked the text, and
 `params` lists the values in order, the same for every placeholder
 style. Queries come from a `QueryBuilder` or a tag, which check their
 text; the constructor is private. It keeps its own copy of the parts
@@ -39,10 +40,11 @@ text; the constructor is private. It keeps its own copy of the parts
 changing its list can't make the parts and `params` disagree.
 
     export class Query {
+      public dialect: Dialect;
       public parts: List<QueryPart>;
       public params: List<SqlValue>;
 
-      private constructor(parts: Listed<QueryPart>) {
+      private constructor(dialect: Dialect, parts: Listed<QueryPart>) {
         let own = parts.toList();
         let params = new ListBuilder<SqlValue>();
         // An index loop, since Temper's C++ backend drops the lambda's
@@ -51,23 +53,25 @@ changing its list can't make the parts and `params` disagree.
           let part = own[i];
           if (part is QueryParam) { params.add(part.value); }
         }
+        this.dialect = dialect;
         this.parts = own;
         this.params = params.toList();
       }
 
-`unchecked` makes a query straight from its parts, skipping every
-check: each `QueryText` is written into the SQL as it is, so it must
-never hold untrusted text. It's for code that checks its own text, such
+`unchecked` makes a query for a dialect straight from its parts,
+skipping every check: each `QueryText` is written into the SQL as it
+is, so it must never hold untrusted text, and must read as the caller
+means in that dialect. It's for code that checks its own text, such
 as another builder that already lexes SQL. Use a `QueryBuilder` or a
 tag otherwise. It takes any list of parts, even a `ListBuilder` still
 being added to, and the query keeps its own copy.
 
 Temper's private constructors still come out public in some backends
-(a known limitation, for now), so there `new Query(parts)` is callable
-too, with the same danger; use `unchecked`, which says so.
+(a known limitation, for now), so there `new Query(dialect, parts)` is
+callable too, with the same danger; use `unchecked`, which says so.
 
-      public static unchecked(parts: Listed<QueryPart>): Query {
-        new Query(parts)
+      public static unchecked(dialect: Dialect, parts: Listed<QueryPart>): Query {
+        new Query(dialect, parts)
       }
 
 ### Rendering
@@ -79,19 +83,11 @@ run together into one token, such as `5-` and `-1` into a comment, or
 line breaks, and the punctuation `(`, `)`, `[`, `]`, `,`, and `;`
 (and `.` beside a quoted name) touch a hole directly.
 
-Rendering bubbles only for a named style whose marker (`@` or `:`) is
-anywhere in the query's text, even inside quotes, since a driver that
-looks for names could misread it.
+Rendering bubbles if `renderProblem` finds a problem: a dialect other
+than the query's, or a named style whose marker is in the text.
 
       public render(dialect: Dialect, style: PlaceholderStyle): RenderedQuery throws Bubble {
-        let marker = style.marker;
-        var clash = false;
-        if (marker != 0) {
-          for (let part of parts) {
-            if (part is QueryText && hasCodePoint(part.text, marker)) { clash = true; }
-          }
-        }
-        if (clash) { bubble() }
+        if (renderProblem(dialect, style) != null) { bubble() }
         let sb = new StringBuilder();
         var last = -1;
         var count = 0;
@@ -112,6 +108,37 @@ looks for names could misread it.
           }
         }
         new RenderedQuery(sb.toString(), params)
+      }
+
+`renderProblem` says why the query can't be rendered for a dialect and
+style, or is null if it can.
+
+The dialect must be one the query's checks cover, since text can read
+differently in another: in `postgres"SELECT 1 # ${x}"`, `#` is an
+operator to PostgreSQL, but starts a comment in MySQL, hiding the
+parameter. A query for `mysql` renders for `mysqlNoBackslashEscapes`
+too, and the other way around, since both check templates with the
+same lexer, which refuses text the two modes read differently.
+
+A named style's marker (`@` or `:`) can't be anywhere in the query's
+text, even inside quotes, since a driver that looks for names could
+misread it.
+
+      public renderProblem(dialect: Dialect, style: PlaceholderStyle): String? {
+        if (!sameLexing(this.dialect, dialect)) {
+          return "query checked for ${this.dialect.name}, not ${dialect.name}";
+        }
+        let marker = style.marker;
+        if (marker != 0) {
+          for (var i = 0; i < parts.length; i += 1) {
+            let part = parts[i];
+            if (part is QueryText && hasCodePoint(part.text, marker)) {
+              let shown = if (marker == char'@') { "@" } else { ":" };
+              return "text has ${shown}, which ${style.name} uses";
+            }
+          }
+        }
+        null
       }
     }
 
@@ -203,6 +230,9 @@ mistake can't misplace a parameter:
 - The text can't hold NUL. PostgreSQL, SQLite, and DuckDB's C API
   stop reading SQL text there, and MySQL and MariaDB end a line
   comment there.
+- A nested query must be for a dialect the builder's checks cover, as
+  for rendering, since its text was checked with its own dialect's
+  rules.
 - The text can't end inside a quote or a block comment. If it ends in
   a line comment, a line break ends that, so text after a nested query
   stays code.
@@ -221,6 +251,7 @@ let q = b.build() orelse panic();
 ```
 
     export class QueryBuilder {
+      private dialect: Dialect;
       private lexer: SqlLexer;
       private parts: ListBuilder<QueryPart>;
       private var pending: StringBuilder;
@@ -228,6 +259,7 @@ let q = b.build() orelse panic();
       private var problem: String?;
 
       public constructor(dialect: Dialect) {
+        this.dialect = dialect;
         this.lexer = newLexer(dialect);
         this.parts = new ListBuilder<QueryPart>();
         this.pending = new StringBuilder();
@@ -266,6 +298,9 @@ let q = b.build() orelse panic();
 
       @overload("append")
       public appendQuery(x: Query): Void {
+        if (!sameLexing(x.dialect, dialect)) {
+          fail("nested query checked for ${x.dialect.name}, not ${dialect.name}");
+        }
         if (hole()) {
           for (let p of x.parts) { parts.add(p); }
         }
@@ -279,7 +314,7 @@ let q = b.build() orelse panic();
         }
         if (!lexer.inCode) { fail("template ends inside a quote or comment"); }
         if (problem != null) { bubble() }
-        Query.unchecked(parts)
+        Query.unchecked(dialect, parts)
       }
 
       public get accumulated(): Query { build() orelse panic() }
@@ -342,15 +377,28 @@ of it can't join into one token.
     }
 
     let newLexer(dialect: Dialect): SqlLexer {
-      if (dialect.name == "sqlite") {
+      let lexing = lexingName(dialect);
+      if (lexing == "sqlite") {
         new SqliteLexer()
-      } else if (dialect.name == "postgres") {
+      } else if (lexing == "postgres") {
         new PostgresLexer(false)
-      } else if (dialect.name == "duckdb") {
+      } else if (lexing == "duckdb") {
         new PostgresLexer(true)
       } else {
         new MysqlLexer()
       }
+    }
+
+`lexingName` names the rules a dialect's templates are checked with:
+its own name, but `mysql` for both MySQL profiles, which share a
+lexer. A query renders, or nests, only where these agree.
+
+    let lexingName(dialect: Dialect): String {
+      if (dialect.name == "mysqlNoBackslashEscapes") { "mysql" } else { dialect.name }
+    }
+
+    let sameLexing(a: Dialect, b: Dialect): Boolean {
+      lexingName(a) == lexingName(b)
     }
 
 States the lexers share.

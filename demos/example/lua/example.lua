@@ -1,4 +1,4 @@
--- Wherewith's example, from Lua: one query, rendered for each database.
+-- Wherewith's example, from Lua: the same query for each database.
 --
 -- The same example exists for each language Wherewith supports, and they all
 -- print the same text. See demos/README.md for how to run them.
@@ -9,18 +9,22 @@ local Dialect, Identifier = wherewith.Dialect, wherewith.Identifier
 local PlaceholderStyle, QueryBuilder = wherewith.PlaceholderStyle, wherewith.QueryBuilder
 
 local name = "Robert'); DROP TABLE students; --"
-local b = QueryBuilder(Dialect.postgres)
-b:appendSafe("SELECT id FROM ")
-b:appendIdentifier(Identifier.named("students"))
-b:appendSafe(" WHERE name = ")
-b:appendString(name)
-local q = b:build()
+
+-- The query for one database, checked with its rules, rendered for it.
+local function find(dialect, style)
+  local b = QueryBuilder(dialect)
+  b:appendSafe("SELECT id FROM ")
+  b:appendIdentifier(Identifier.named("students"))
+  b:appendSafe(" WHERE name = ")
+  b:appendString(name)
+  return b:build():render(dialect, style)
+end
 
 -- Each database's quoting, with the placeholders its driver takes.
-print("sqlite: " .. q:render(Dialect.sqlite, PlaceholderStyle.question).sql)
-print("postgres: " .. q:render(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql)
-print("mysql: " .. q:render(Dialect.mysql, PlaceholderStyle.percentS).sql)
-local r = q:render(Dialect.duckdb, PlaceholderStyle.dollarNumbered)
+print("sqlite: " .. find(Dialect.sqlite, PlaceholderStyle.question).sql)
+print("postgres: " .. find(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql)
+print("mysql: " .. find(Dialect.mysql, PlaceholderStyle.percentS).sql)
+local r = find(Dialect.duckdb, PlaceholderStyle.dollarNumbered)
 print("duckdb: " .. r.sql)
 -- The name travels apart from the SQL, for the driver to bind.
 print("params: " .. #r.params)

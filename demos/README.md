@@ -2,10 +2,11 @@
 
 ## Example
 
-`example/` builds one query in each supported language: a name bound as a
-parameter and a table name quoted, rendered for SQLite, PostgreSQL, MySQL
-and MariaDB, and DuckDB, each with a placeholder style its drivers take,
-then a value inside quotes, refused. Every version prints the same text,
+`example/` builds the same query in each supported language: a name bound
+as a parameter and a table name quoted, for SQLite, PostgreSQL, MySQL and
+MariaDB, and DuckDB, each checked with its database's rules and rendered
+with a placeholder style its drivers take, then a value inside quotes,
+refused. Every version prints the same text,
 `example/expected.txt`, so the examples double as a cross-language test.
 The site shows them.
 

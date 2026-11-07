@@ -131,33 +131,41 @@ Done:
   bad input, and `nameProblem` and `stringProblem`, which say why.
 - `Identifier.named(name)`: a name that quotes safely in every dialect,
   for template holes.
-- `Query`: a dialect-neutral query, as a list of parts: `QueryText`
+- `Query`: a query for one dialect, as a list of parts: `QueryText`
   (SQL text), `QueryParam` (a `SqlValue`: `SqlText`, `SqlInt`,
   `SqlFloat`, `SqlBool`, or `SqlNull`), and `QueryName` (an
   `Identifier`). A nested query's parts go in place, so parameters
-  number straight through. `params` lists the values in order. Its
+  number straight through. `dialect` is the dialect whose lexing rules
+  checked its text, and `params` lists the values in order. Its
   constructor is private: queries come from a `QueryBuilder` or a tag,
-  which check their text, or from `Query.unchecked(parts)`, which skips
-  every check and is named so it's plainly unsafe for untrusted text.
+  which check their text, or from `Query.unchecked(dialect, parts)`,
+  which skips every check and is named so it's plainly unsafe for
+  untrusted text.
   It takes any list of parts, even a `ListBuilder`, and keeps its own
   copy, so later changes to the caller's list can't make the parts
   and `params` disagree.
   Temper's private constructors are still public in some backends, a
-  known limitation, so `new Query(parts)` may be callable there, with
-  the same danger.
+  known limitation, so `new Query(dialect, parts)` may be callable
+  there, with the same danger.
 - `Query.render(dialect, style)` gives a `RenderedQuery`, with `sql`
   and `params`: names quoted for the dialect, and each parameter
   written in a `PlaceholderStyle`, chosen at render time: `question`
   (`?`), `dollarNumbered` (`$1`), `percentS` (`%s`, doubling every `%`
   in the text and names), `atNamed` (`@p1`), or `colonNamed` (`:p1`).
-  A named style bubbles if its marker is anywhere in the text. Where a
-  hole meets text it could merge with (`5-` and `-1`, `a` and `$1`, or
-  two quoted names), rendering adds a space.
+  It bubbles for a dialect other than the query's, since the same text
+  can read differently there, and for a named style whose marker is
+  anywhere in the text; `renderProblem` says why. The two MySQL
+  profiles share their queries, since they check templates with the
+  same lexer, which refuses text the two modes read differently.
+  `render` keeps its dialect argument for a portable dialect, later,
+  whose queries could render for several databases. Where a hole meets
+  text it could merge with (`5-` and `-1`, `a` and `$1`, or two quoted
+  names), rendering adds a space.
 - `QueryBuilder(dialect)`: makes a query from plain code, checking its
   text with that dialect's lexing rules: `appendSafe` for trusted SQL
   text, `append` overloads for values, `SqlValue`, `Identifier`, and
-  `Query`, and `build`, which bubbles on a mistake, with
-  `templateProblem` saying why.
+  `Query` (of the same dialect, as for rendering), and `build`, which
+  bubbles on a mistake, with `templateProblem` saying why.
 - The `sqlite`, `postgres`, `mysql`, and `duckdb` tags (`SqliteTag`,
   `PostgresTag`, `MysqlTag`, and `DuckdbTag`): `postgres"SELECT * FROM
   t WHERE a = ${x}"` gives a `Query`, built with that dialect's checks.
@@ -166,7 +174,8 @@ Done:
   placeholder-like text (`?` everywhere, `$` outside PostgreSQL's and
   DuckDB's dollar quotes, and SQLite's `:a` and `@a`), text ending in a
   quote or block comment, a MySQL backslash before a quote or backslash
-  in a string (read differently under `NO_BACKSLASH_ESCAPES`), MySQL
+  in a string (read differently under `NO_BACKSLASH_ESCAPES`), a
+  nested query of another dialect, MySQL
   executable comments, quotes in MySQL optimizer hints (`/*+ … */`),
   text that puts DuckDB's Unicode space pass out of step, and NUL
   anywhere in the text. Each dialect's file lists its rules.
@@ -387,7 +396,13 @@ Each has a recommendation, but stays open until decided.
 - **Placeholder styles** are chosen at render time, not fixed per
   dialect, since they depend on the driver.
 - **Raw queries:** `Query`'s constructor is private, and
-  `Query.unchecked(parts)` is the plainly named way to skip the checks.
+  `Query.unchecked(dialect, parts)` is the plainly named way to skip
+  the checks.
+- **A query keeps its dialect** and renders only for it (or the other
+  MySQL profile), since text checked by one dialect's lexer can read
+  differently in another: `postgres"SELECT 1 # ${x}"` is fine in
+  PostgreSQL, where `#` is an operator, but rendered for MySQL its
+  parameter would land in a `#` comment.
 - **Named styles** fail if their marker is anywhere in the text, even
   in quotes or comments, rather than lexing to find only real
   placeholders: conservative, and the same for every driver.

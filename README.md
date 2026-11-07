@@ -26,7 +26,9 @@ r.sql;    // SELECT id FROM students WHERE name = $1, or = %s for psycopg
 
 // Templates for SQLite, PostgreSQL, MySQL, and DuckDB each check the SQL
 // text with that database's rules, and plain code can use a QueryBuilder.
+// A query renders only for the database it was checked for.
 mysql"SELECT * FROM t WHERE a = '${name}'"; // panics: a value inside quotes
+q.render(Dialect.mysql, PlaceholderStyle.question); // bubbles: q is for postgres
 
 // Names are quoted as each database expects.
 Dialect.postgres.quoteName("my \"table\"");   // "my ""table"""
@@ -90,7 +92,7 @@ CI runs the tests on every backend for pull requests and pushes to
 Python 3.11: SQLite and DuckDB in the `py` job, and PostgreSQL and
 MariaDB as service containers in the `engines` job. Source files in
 `src/` are literate Markdown: `core.temper.md` has what every dialect
-shares, `query.temper.md` the dialect-neutral query and its builder,
+shares, `query.temper.md` the query and its builder,
 and each database has its own file (`sqlite`, `postgres`, `mysql`, and
 `duckdb`) with its tag and template lexer, with tests beside them in
 `-tests` files.
