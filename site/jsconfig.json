@@ -1,0 +1,21 @@
+{
+  "//": "For editors and build.py's check: files opt into checking with // @ts-check.",
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": [
+      "es2022",
+      "dom",
+      "dom.iterable"
+    ],
+    "strict": true
+  },
+  "include": [
+    "*.js"
+  ],
+  "exclude": [
+    "build",
+    "node_modules"
+  ]
+}

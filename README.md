@@ -95,6 +95,21 @@ and each database has its own file (`sqlite`, `postgres`, `mysql`, and
 `duckdb`) with its tag and template lexer, with tests beside them in
 `-tests` files.
 
+The same query, built from each language, is in
+[`demos/example/`](demos/README.md), and CI checks that every one
+prints the same text.
+
+### Site
+
+[The site](site/) is one static page: the query in Temper and in each
+language, why Wherewith, and each driver's placeholders. Its code comes
+from the example and the Temper tests, and its table from the design
+notes, so it can't drift from them. Build and preview it:
+
+    npm ci --prefix site
+    uv run site/build.py
+    python3 -m http.server --bind 127.0.0.1 -d site/build
+
 ## License
 
 Apache-2.0 OR MIT, at your option, as Temper is; see [COPYRIGHT](COPYRIGHT). Third-party material, with its notices, is in [NOTICE](NOTICE).

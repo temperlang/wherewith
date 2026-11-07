@@ -1,0 +1,6 @@
+sqlite: SELECT id FROM "students" WHERE name = ?
+postgres: SELECT id FROM "students" WHERE name = $1
+mysql: SELECT id FROM `students` WHERE name = %s
+duckdb: SELECT id FROM "students" WHERE name = $1
+params: 1
+refused: hole inside a quote or comment

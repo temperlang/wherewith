@@ -64,6 +64,12 @@ jobs:
       - name: Test
         run: temper test -b ${{ matrix.backend }}
 
+      # The example in demos/, which the site shows, must print the same
+      # text in every language. Each language's own tools build it against
+      # the output `temper test` left in temper.out/.
+      - name: Example
+        run: python3 demos/run.py ${{ matrix.backend }}
+
       # Round trips through embedded engines, with the Python library:
       # SQLite through the standard library's sqlite3, and DuckDB
       # through the duckdb package in uv.lock.

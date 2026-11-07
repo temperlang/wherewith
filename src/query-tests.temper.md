@@ -252,3 +252,31 @@ params as they were, and consistent.
       assert(r.sql == "SELECT $1");
       assert(r.params.length == 1);
     }
+
+## The site's example
+
+The site's opening example: one template, rendered for each database.
+The lines between the `snippet` comments go on the site, and the
+demos in `demos/example/` build the same query from each language,
+printing what these asserts check.
+
+    test("the site's example") {
+      // snippet: temper
+      let name = "Robert'); DROP TABLE students; --";
+      let students = Identifier.named("students") orelse panic();
+      let q = postgres"SELECT id FROM ${students} WHERE name = ${name}";
+      let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+      // end snippet
+      assert(r.sql == "SELECT id FROM \"students\" WHERE name = $1");
+      assert(r.params.length == 1);
+      assert(paramText(r.params[0]) == "text:${name}");
+      assert(qmarks(q) == "SELECT id FROM \"students\" WHERE name = ?");
+      assert(render(q, Dialect.mysql, PlaceholderStyle.percentS) == "SELECT id FROM `students` WHERE name = %s");
+      assert(render(q, Dialect.duckdb, PlaceholderStyle.dollarNumbered) == "SELECT id FROM \"students\" WHERE name = $1");
+      let quoted = checkTemplate(Dialect.postgres) { b =>
+        b.appendSafe("SELECT id FROM students WHERE name = '");
+        b.appendString(name);
+        b.appendSafe("'");
+      };
+      assert(quoted == "hole inside a quote or comment");
+    }

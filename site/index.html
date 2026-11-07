@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wherewith: safe SQL, written once, for every language</title>
+  <meta name="description" content="SQL written once in Temper, safe in C++, C#, Java, JavaScript, Lua, Python, and Rust: values bound as parameters, names quoted for SQLite, PostgreSQL, MySQL and MariaDB, and DuckDB.">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+  <!-- Without script, every language's code shows, one after another. -->
+  <noscript><style>.lang-panel[hidden] { display: block !important; } .tabs { display: none; }</style></noscript>
+</head>
+<body>
+  <a class="skip" href="#languages">Skip to the code</a>
+  <header class="top">
+    <div class="wrap bar">
+      <p class="brand"><a href="#">Wherewith</a></p>
+      <nav aria-label="Sections">
+        <a href="#languages">Code</a>
+        <a href="#why">Why</a>
+        <a href="#dialects">Dialects</a>
+        <a href="https://github.com/temperlang/wherewith">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="opening" aria-labelledby="title">
+    <div class="wrap">
+      <p class="slogan">
+        <strong>Muscle memory for AI.</strong>
+        <span>Solve it once in Temper, and every language remembers.</span>
+      </p>
+      <h1 id="title">Safe SQL, written once, for every language.</h1>
+      <p class="lead">
+        Wherewith is SQL written once in
+        <a href="https://temperlang.dev/">Temper</a>, and safe in C++, C#,
+        Java, JavaScript, Lua, Python, and Rust: values become placeholders,
+        and names are quoted the way each database reads them.
+      </p>
+<!--HERO-->
+      <p class="punch">The hostile name never becomes SQL. The driver gets it as a parameter.</p>
+    </div>
+  </section>
+
+  <main>
+    <section id="languages" aria-labelledby="languages-title">
+      <div class="wrap">
+        <h2 id="languages-title">One query, seven languages</h2>
+        <p>
+          In Temper, the query is a tagged template, checked with
+          PostgreSQL's rules. Every language gets the same library, built
+          from it, and builds the same query with a
+          <code>QueryBuilder</code>:
+        </p>
+<!--TEMPER-->
+        <div class="tabs" role="tablist" aria-label="Language">
+<!--TABS-->
+        </div>
+<!--PANELS-->
+        <p class="output-label">Every language prints the same:</p>
+<!--OUTPUT-->
+        <p class="small-note">
+          Each program is in
+          <a href="https://github.com/temperlang/wherewith/tree/main/demos/example"><code>demos/example</code></a>,
+          and CI runs them all and checks their output, so this page shows
+          code that works. The Temper is from the library's own tests.
+        </p>
+      </div>
+    </section>
+
+    <section id="why" aria-labelledby="why-title">
+      <div class="wrap">
+        <h2 id="why-title">Why Wherewith</h2>
+        <ul class="reasons">
+          <li>
+            <strong>Values become placeholders.</strong>
+            A template's values go to the driver as parameters, with their
+            types, so a value never becomes SQL, whatever it holds.
+          </li>
+          <li>
+            <strong>Names are quoted for the dialect.</strong>
+            <code>"students"</code> for PostgreSQL, <code>`students`</code>
+            for MySQL, with each database's own limits. A name that can't be
+            written safely, such as a 64-byte PostgreSQL name, is refused,
+            not cut short.
+          </li>
+          <li>
+            <strong>Mistakes are refused, not guessed at.</strong>
+            A value inside quotes or a comment, a stray <code>?</code> or
+            <code>$1</code> in the text, or text that ends inside a quote:
+            Wherewith says what's wrong instead of building the query.
+          </li>
+          <li>
+            <strong>One query, four databases.</strong>
+            The same query renders for SQLite, PostgreSQL, MySQL and
+            MariaDB, and DuckDB, with whichever placeholder style the driver
+            takes: <!--STYLES-->.
+          </li>
+          <li>
+            <strong>Tested against real engines.</strong>
+            Its tests run in all seven languages, and round trips run hostile
+            input and random templates through SQLite, DuckDB,
+            PostgreSQL 18, and MariaDB 11.8, checking that quoted strings
+            and names read back exactly, and bound values come back equal.
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="dialects" aria-labelledby="dialects-title">
+      <div class="wrap">
+        <h2 id="dialects-title">Dialects and placeholders</h2>
+        <p>
+          Placeholder syntax depends on the driver, not only the database,
+          so it's chosen when a query is rendered. Each driver's style, from
+          the <a href="https://github.com/temperlang/wherewith/blob/main/docs/design.md#parameters-per-driver">design notes</a>:
+        </p>
+<!--DIALECTS-->
+      </div>
+    </section>
+
+    <section id="tour" aria-labelledby="tour-title">
+      <div class="wrap">
+        <h2 id="tour-title">The tour is coming</h2>
+        <p>
+          A tour of the whole API, in every language, comes once the
+          statement model for <code>SELECT</code>, <code>INSERT</code>,
+          <code>UPDATE</code>, and <code>DELETE</code> lands, since the API
+          is still moving. Until then, the
+          <a href="https://github.com/temperlang/wherewith#readme">README</a>
+          and the
+          <a href="https://github.com/temperlang/wherewith/blob/main/docs/design.md">design notes</a>
+          cover it all.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <p>
+        Wherewith is open source, at
+        <a href="https://github.com/temperlang/wherewith">github.com/temperlang/wherewith</a>,
+        under <a href="https://github.com/temperlang/wherewith/blob/main/LICENSE-APACHE">Apache-2.0</a>
+        or <a href="https://github.com/temperlang/wherewith/blob/main/LICENSE-MIT">MIT</a>.
+        Read the <a href="https://github.com/temperlang/wherewith/blob/main/docs/design.md">design notes</a>
+        for each dialect's rules.
+      </p>
+      <p class="small-note">
+        Beta, as every Temper library is until Temper's translations reach
+        1.0, so the API may change. Made with
+        <a href="https://temperlang.dev/">Temper</a>.
+      </p>
+    </div>
+  </footer>
+</body>
+</html>

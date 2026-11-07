@@ -1,0 +1,11 @@
+{
+  "name": "wherewith-site",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "typescript": "7.0.2"
+  },
+  "scripts": {
+    "check": "tsc -p jsconfig.json --noEmit"
+  }
+}

@@ -1,0 +1,531 @@
+/* Wherewith's site. Colors are tokens, redefined for dark mode; the layout,
+   code, and tab styles follow Hrefine's and Chromarite's sites. */
+
+:root {
+  --bg: #fafbfc;
+  --surface: #ffffff;
+  --text: #17202b;
+  --muted: #55606d;
+  --border: #dbe1e8;
+  --accent: #3d4fc4;
+  --accent-2: #0b7a72;
+  --code-bg: #f0f3f7;
+  --keyword: #8a2be2;
+  --string: #0f7a4a;
+  --number: #b0461a;
+  --comment: #5f6977;
+  --type: #1d5fa8;
+  /* The opening: holes, quoted names, and placeholders. */
+  --hole: #b0461a;
+  --hole-bg: #fdf0e6;
+  --name: #3d4fc4;
+  --param: #0b7a72;
+  --param-bg: #e6f5f3;
+  color-scheme: light dark;
+}
+
+/* Layout rules like `display: flex` would otherwise show hidden elements. */
+[hidden] {
+  display: none !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #10141a;
+    --surface: #171c23;
+    --text: #e6ebf1;
+    --muted: #a0abb8;
+    --border: #2c3440;
+    --accent: #9aa8ff;
+    --accent-2: #5fd6c8;
+    --code-bg: #1c232c;
+    --keyword: #c9a0ff;
+    --string: #7fd4a4;
+    --number: #f0a274;
+    --comment: #8b97a5;
+    --type: #8cc4ff;
+    --hole: #f0a274;
+    --hole-bg: #3a2616;
+    --name: #9aa8ff;
+    --param: #5fd6c8;
+    --param-bg: #12302d;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.wrap {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+code {
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2 {
+  line-height: 1.2;
+}
+
+h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.9rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.skip {
+  position: absolute;
+  left: -999px;
+}
+
+.skip:focus {
+  left: 1rem;
+  top: 0.5rem;
+  z-index: 10;
+  background: var(--surface);
+  padding: 0.25rem 0.5rem;
+}
+
+/* The top bar. */
+
+.top {
+  background-color: var(--surface);
+  border-bottom: 1px solid var(--border);
+  /* A strip of the two accents along the top. */
+  background-image: linear-gradient(90deg, var(--accent), var(--accent-2));
+  background-size: 100% 5px;
+  background-repeat: no-repeat;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1.5rem;
+  padding-top: 0.9rem;
+  padding-bottom: 0.5rem;
+}
+
+.brand {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.brand a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.bar nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  font-size: 0.95rem;
+}
+
+/* The opening: one template, and the query each database gets. */
+
+.opening {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 1rem 0 1.75rem;
+}
+
+.slogan {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.slogan strong {
+  color: var(--text);
+}
+
+.opening h1 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
+  letter-spacing: -0.015em;
+}
+
+.lead {
+  margin: 0 0 1.25rem;
+  max-width: 50rem;
+  color: var(--muted);
+}
+
+.punch {
+  margin: 1rem 0 0;
+  font-size: clamp(1.1rem, 2.6vw, 1.35rem);
+  font-weight: 650;
+}
+
+.hero-demo {
+  max-width: 52rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--bg);
+}
+
+.hero-demo p {
+  margin: 0;
+}
+
+.label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.template {
+  margin: 0.15rem 0 0.35rem !important;
+}
+
+.template code {
+  font-size: clamp(0.95rem, 2.6vw, 1.2rem);
+  font-weight: 600;
+}
+
+.template .tag {
+  color: var(--keyword);
+}
+
+.hole {
+  color: var(--hole);
+  background: var(--hole-bg);
+  border-radius: 0.2rem;
+  padding: 0 0.1em;
+}
+
+.value code {
+  color: var(--hole);
+}
+
+.arrow {
+  margin: 0.35rem 0 0.1rem !important;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.rendered {
+  list-style: none;
+  margin: 0.3rem 0 0.6rem;
+  padding: 0;
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  gap: 0.35rem 0.9rem;
+  align-items: baseline;
+}
+
+.rendered li {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+}
+
+.rendered .db {
+  font-weight: 650;
+}
+
+.rendered .style {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.rendered .sql {
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.35rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+}
+
+.q-name {
+  color: var(--name);
+  font-weight: 650;
+}
+
+.q-param {
+  color: var(--param);
+  font-weight: 700;
+  background: var(--param-bg);
+  border-radius: 0.2rem;
+  padding: 0 0.15em;
+}
+
+.params code {
+  color: var(--hole);
+}
+
+.q-param-key {
+  color: var(--param);
+  background: var(--param-bg);
+  font-weight: 650;
+  font-size: 0.9rem;
+  border-radius: 0.25rem;
+  padding: 0.05rem 0.4rem;
+}
+
+/* On a phone, each database over its SQL. */
+@media (max-width: 40rem) {
+  .rendered {
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.1rem 0.6rem;
+  }
+
+  .rendered .style {
+    justify-self: start;
+  }
+
+  .rendered .sql {
+    grid-column: 1 / -1;
+    margin-bottom: 0.4rem;
+  }
+}
+
+/* Sections. */
+
+main > section {
+  padding: 2.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+main > section p {
+  max-width: 52rem;
+}
+
+.small-note {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.code-label,
+.output-label {
+  margin: 1rem 0 0.2rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Code tabs. */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 1.25rem 0 0.4rem;
+}
+
+.tabs button {
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.tabs button:hover {
+  border-color: var(--accent);
+}
+
+.tabs button[aria-selected="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface);
+}
+
+.run {
+  margin: 0.3rem 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+pre.source,
+pre.output {
+  margin: 0.4rem 0 0.5rem;
+  padding: 0.9rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  overflow: auto;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+pre code {
+  font-size: inherit;
+  overflow-wrap: normal;
+}
+
+.tok-comment {
+  color: var(--comment);
+  font-style: italic;
+}
+
+.tok-string {
+  color: var(--string);
+}
+
+.tok-number {
+  color: var(--number);
+}
+
+.tok-keyword {
+  color: var(--keyword);
+}
+
+.tok-type {
+  color: var(--type);
+}
+
+/* Why. */
+
+.reasons {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+  gap: 0.75rem;
+}
+
+.reasons li {
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--border);
+  border-top: 4px solid var(--accent-2);
+  border-radius: 0.5rem;
+  background: var(--surface);
+}
+
+.reasons strong {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+/* The dialect table. */
+
+.table-scroll {
+  overflow-x: auto;
+  container-type: inline-size;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.92rem;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.4rem 0.75rem 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+thead th {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+tbody th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dialects .server {
+  background: var(--code-bg);
+}
+
+.dialects .server th {
+  padding-left: 0.4rem;
+}
+
+/* Narrow: each language a block, with each database's label beside its
+   cell, by the width the table has, not the screen's. */
+@container (max-width: 40rem) {
+  .dialects thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .dialects tr,
+  .dialects th,
+  .dialects td {
+    display: block;
+  }
+
+  .dialects tr {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .dialects .server {
+    padding: 0.5rem 0.4rem;
+  }
+
+  .dialects th,
+  .dialects td {
+    border: none;
+    padding: 0.1rem 0;
+  }
+
+  .dialects td {
+    display: grid;
+    grid-template-columns: 9.5rem minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+
+  .dialects td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+}
+
+footer {
+  padding: 1.5rem 0 2.5rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}

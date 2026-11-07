@@ -1,0 +1,53 @@
+# A GitHub Pages workflow for the site, not yet enabled. To publish, move
+# it to .github/workflows/site.yml and set Settings > Pages > Source to
+# GitHub Actions. Until then, nothing here runs.
+name: site
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The page needs no Temper output: its code comes from the sources,
+      # which the test workflow runs. Node type-checks its script.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build
+        run: |
+          npm ci --prefix site
+          uv run site/build.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/build
+
+  # Publishes only from main. Needs Settings > Pages > Source: GitHub Actions.
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
