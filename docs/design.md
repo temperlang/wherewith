@@ -1,12 +1,22 @@
 # Wherewith Design
 
-Wherewith writes SQL text safely for SQLite, PostgreSQL, MySQL or
-MariaDB, and DuckDB, the same in every language Temper supports. It's small on
-purpose: the pieces a safe-composition framework, a query builder, or
-an admin tool needs underneath, done right per dialect.
+Wherewith lets you write a query once, in a common SQL dialect, and
+run it on SQLite, PostgreSQL, MySQL or MariaDB, and DuckDB, the same in
+every language Temper supports. It parses the common dialect, checks
+that a query means the same on every database it targets, and renders
+it for each, with values always bound as parameters. Underneath are
+the pieces a safe-composition framework, a query builder, or an admin
+tool needs: quoting and templates for each database, done right.
+
+The common dialect is [designed below](#the-common-dialect), for
+review, and not built yet; quoting and per-database templates are done.
 
 ## Goals
 
+- **Write once, run on every database:** a common dialect, starting
+  with a useful subset of SQL, parsed and rendered for each database,
+  with a check stage that refuses what wouldn't mean the same
+  everywhere.
 - **Quoting that's right per dialect:** names (identifiers) and string
   literals, including hostile input, with a clear failure where a value
   can't be written safely, never a guess.
@@ -23,9 +33,14 @@ an admin tool needs underneath, done right per dialect.
 
 ## Non-goals
 
-- A SQL parser, a query builder, or an ORM. Template text is lexed only
-  enough to find quotes, comments, and stray parameters.
-- Translating SQL between dialects.
+- Translating one database's SQL into another's, say PostgreSQL's into
+  MySQL's. Translation goes one way: from the common dialect to each
+  database.
+- All of SQL. The common dialect grows from a useful subset, and the
+  per-database tags cover the rest; their text is lexed only enough to
+  find quotes, comments, and stray parameters, never parsed.
+- An ORM, or knowledge of the schema. Wherewith never sees tables or
+  column types, so it checks only what a query's text and values show.
 - Claims of conformance to the SQL standard. Wherewith follows what the
   databases actually do, as their manuals describe and, later,
   as tests against the real engines show.
@@ -157,8 +172,9 @@ Done:
   anywhere in the text; `renderProblem` says why. The two MySQL
   profiles share their queries, since they check templates with the
   same lexer, which refuses text the two modes read differently.
-  `render` keeps its dialect argument for a portable dialect, later,
-  whose queries could render for several databases. Where a hole meets
+  `render` keeps its dialect argument for the
+  [common dialect](#the-common-dialect), whose queries will render for
+  every database. Where a hole meets
   text it could merge with (`5-` and `-1`, `a` and `$1`, or two quoted
   names), rendering adds a space.
 - `QueryBuilder(dialect)`: makes a query from plain code, checking its
@@ -180,10 +196,7 @@ Done:
   text that puts DuckDB's Unicode space pass out of step, and NUL
   anywhere in the text. Each dialect's file lists its rules.
 
-Later, after a design pass:
-
-- A small statement model: `SELECT`, `INSERT`, `UPDATE`, and `DELETE`,
-  with `WHERE`, `ORDER BY`, and `LIMIT`.
+Next: the [common dialect](#the-common-dialect), designed below.
 
 Also planned:
 
@@ -194,6 +207,384 @@ Also planned:
   `NullsOrder`, `ComparisonOperator`, `ColumnType` per dialect,
   `ForeignKeyAction`, and `SqlFunction` (a short list of scalar
   functions). In a template they're written as SQL.
+
+## The common dialect
+
+Status: design for review (2026-11-07); nothing here is built yet.
+
+One query, written once, rendered for each database:
+
+```temper inert
+let q = sql"SELECT name, coalesce(nick, name) AS shown FROM users
+  WHERE id IN (${a}, ${b}) ORDER BY name NULLS LAST LIMIT ${10}";
+q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered);
+// SELECT "name", COALESCE("nick", "name") AS "shown" FROM "users"
+//   WHERE "id" IN ($1, $2) ORDER BY "name" LIMIT $3
+q.render(Dialect.mysql, PlaceholderStyle.question);
+// SELECT `name`, COALESCE(`nick`, `name`) AS `shown` FROM `users`
+//   WHERE `id` IN (?, ?) ORDER BY `name` IS NULL, `name` LIMIT ?
+```
+
+A template goes through four stages: the lexer and parser make a
+syntax tree when the tag runs; the check stage refuses anything that
+wouldn't mean the same on every target; and `render` writes the tree
+for one database. The rules:
+
+- **Same meaning or refused.** Where databases differ, Wherewith
+  emulates the difference only when the emulation is exact and cheap,
+  refuses what the check can see, and documents what only the data
+  decides (collations, column types), with an engine test pinning
+  each documented difference so this page stays true.
+- **Values are always parameters**, and names are always quoted on
+  output, so no target's reserved words matter.
+- **One way only:** common to each database. Text checked by one
+  database's tag is never parsed or translated.
+
+### The first subset
+
+Statements, one per query, with no `;`:
+
+- `SELECT [DISTINCT]` columns (`*`, `t.*`, expressions with `AS`
+  aliases), `FROM` a table or a subquery with an alias, joined by
+  `[INNER] JOIN`, `LEFT [OUTER] JOIN` (with `ON` or `USING`), or
+  `CROSS JOIN`; `WHERE`, `GROUP BY` and `HAVING`, `ORDER BY` with
+  `ASC`, `DESC`, and `NULLS FIRST` or `NULLS LAST`, and `LIMIT` and
+  `OFFSET`.
+- `INSERT INTO t (columns) VALUES (…), (…)` or `… SELECT …`, always
+  with a column list.
+- `UPDATE t SET c = e, … [WHERE …]` and `DELETE FROM t [WHERE …]`.
+
+Expressions: literals (integers, decimals, strings, `TRUE`, `FALSE`,
+and `NULL`), columns (`c` or `t.c`), parameters, comparisons (`=`,
+`<>` or `!=`, `<`, `<=`, `>`, `>=`), `AND`, `OR`, `NOT`, arithmetic
+(`+`, `-`, `*`, `/`, `%`), `||` concatenation, `IS [NOT] NULL`,
+`[NOT] IN` (a list or a subquery), `[NOT] BETWEEN`, `[NOT] LIKE` with
+`ESCAPE`, `EXISTS`, scalar subqueries, `CASE` (both forms), and
+`CAST` to `INTEGER` (64-bit), `DOUBLE`, or `TEXT`. Functions:
+`COALESCE`, `NULLIF`, `ABS`, `LOWER`, `UPPER`, `LENGTH`, `SUBSTR`,
+`TRIM`, `REPLACE`, and the aggregates `COUNT(*)`, `COUNT([DISTINCT]
+x)`, `SUM`, `AVG`, `MIN`, and `MAX`.
+
+Deliberately later, each needing its own design:
+
+| Construct | Why later |
+| --- | --- |
+| Upsert | `ON CONFLICT` (SQLite, PostgreSQL, DuckDB) and MySQL's `ON DUPLICATE KEY UPDATE` pick the conflicting key differently; MySQL can't name one. |
+| `RETURNING` | Missing in MySQL; MariaDB has it for `INSERT` and `DELETE` only. Needs a refusal story per target. |
+| Window functions | MySQL 8.0 and MariaDB 10.2 or later only, and frame defaults and function lists differ. |
+| CTEs (`WITH`) | Recursion and materialization differ, and MySQL needs 8.0. Small once subqueries are solid. |
+| DDL | Column types differ the most; needs the `ColumnType` whitelists first. |
+| Dates and times | Types, time zones, and functions differ almost everywhere; needs the planned date values first. |
+| `UNION`, `INTERSECT`, `EXCEPT` | SQLite takes no parenthesized members; MySQL has `INTERSECT` and `EXCEPT` only from 8.0.31. |
+| `RIGHT` and `FULL JOIN` | SQLite only from 3.39; MySQL has no `FULL JOIN`. |
+| `IS [NOT] DISTINCT FROM` | Easy (`IS` in SQLite, `<=>` in MySQL); next after the subset. |
+| Lists bound to `IN ${list}`, bytes, JSON, regular expressions, `ILIKE` | Need new value types, or differ widely. |
+
+### The tag and the API
+
+The `sql` tag (name open, below) gives a `Query` whose `dialect` is
+`Dialect.common`, a new profile that quotes as the shared core does
+and allows only names `Identifier` allows. Unlike other queries, a
+common query renders for every profile:
+
+- **Parts and tree.** `parts` keeps the template as written, and the
+  query also holds its syntax tree, privately, built at construction.
+  `Query.unchecked(Dialect.common, parts)` parses too, since rendering
+  needs the tree.
+- **Rendering.** `render(dialect, style)` checks the query for that
+  dialect, writes the tree as parts for it, and then renders those as
+  any query (spacing, `%` doubling, and the named-marker check), so
+  placeholder styles work unchanged. `render(Dialect.common, style)`
+  writes canonical common SQL, for logs and tests. `renderProblem`
+  gives the check's message.
+- **Targets.** A query records the dialects it was checked for:
+  every profile by default, or fewer, set on a builder with
+  `targets`. Rendering for another dialect checks again, and bubbles
+  on a problem.
+- **Builder.** `new QueryBuilder(Dialect.common)` takes the same
+  `appendSafe` and `append` calls, and `build` parses and checks,
+  bubbling with `templateProblem`; the tag panics, as other tags do.
+- **Holes by kind.** A value (`String`, `Int`, `SqlValue`, …) goes
+  only where the grammar takes an expression or a `LIMIT` count; an
+  `Identifier` only where it takes a name (a table, a column, an
+  alias, or one part of `${schema}.${table}`); and a common `Query`
+  only where it takes a subquery, as in `IN (${q})`, `EXISTS (${q})`,
+  or `FROM (${q}) AS t`. Anything else is a template mistake: a
+  `String` can never become a name.
+- **Nesting.** Common queries nest in common templates, if the outer
+  query's targets are among the inner one's. A common query nested in
+  a database's template (`postgres"… ${q}"`) is rendered for that
+  database and goes in as parts: an escape hatch for features outside
+  the subset. A database's query can't nest in a common template,
+  since it has no tree.
+
+### The parser
+
+Pure Temper, with no regular expressions: a lexer reads each text run
+into tokens, with holes as tokens of their kind, and a
+recursive-descent parser builds the tree. The grammar, roughly
+(keywords are case-insensitive):
+
+```
+statement = select | insert | update | delete
+select    = "SELECT" ["DISTINCT"] item {"," item} ["FROM" source {join}]
+            ["WHERE" expr] ["GROUP" "BY" exprs ["HAVING" expr]]
+            ["ORDER" "BY" order {"," order}] ["LIMIT" count] ["OFFSET" count]
+item      = "*" | name "." "*" | expr ["AS" name]
+source    = qname [["AS"] name] | subquery ["AS"] name
+join      = ["INNER" | "LEFT" ["OUTER"]] "JOIN" source
+              ("ON" expr | "USING" "(" names ")")
+          | "CROSS" "JOIN" source
+order     = expr ["ASC" | "DESC"] ["NULLS" ("FIRST" | "LAST")]
+count     = INTEGER | VALUE_HOLE
+insert    = "INSERT" "INTO" qname "(" names ")"
+            ("VALUES" row {"," row} | select)
+update    = "UPDATE" qname "SET" name "=" expr {"," name "=" expr} ["WHERE" expr]
+delete    = "DELETE" "FROM" qname ["WHERE" expr]
+
+expr      = and {"OR" and}
+and       = not {"AND" not}
+not       = "NOT" not | predicate
+predicate = concat [cmp concat | "IS" ["NOT"] "NULL"
+            | ["NOT"] "IN" (subquery | "(" exprs ")")
+            | ["NOT"] "BETWEEN" concat "AND" concat
+            | ["NOT"] "LIKE" concat ["ESCAPE" STRING]]
+concat    = sum {"||" sum}
+sum       = product {("+" | "-") product}
+product   = unary {("*" | "/" | "%") unary}
+unary     = ["-" | "+"] primary
+primary   = literal | VALUE_HOLE | column | "(" expr ")" | subquery
+          | "EXISTS" subquery | case | cast | call
+subquery  = "(" (select | QUERY_HOLE) ")"
+cast      = "CAST" "(" expr "AS" ("INTEGER" | "DOUBLE" | "TEXT") ")"
+case      = "CASE" [expr] ("WHEN" expr "THEN" expr)+ ["ELSE" expr] "END"
+call      = "COUNT" "(" "*" ")" | FUNCTION "(" ["DISTINCT"] [exprs] ")"
+column    = name ["." name]
+qname     = name ["." name]
+name      = BARE | QUOTED | NAME_HOLE
+```
+
+Lexing rules: ASCII whitespace; `--` comments to a line feed, and
+`/* */` comments, with `/*` refused inside one (PostgreSQL and DuckDB
+nest them, SQLite and MySQL don't); bare names `[A-Za-z_][A-Za-z0-9_]*`
+that aren't keywords; quoted names `"…"` and strings `'…'`, with the
+quote doubled and no backslash escapes; integers and decimals (`12`,
+`1.5`, no exponents); and the operators above. Anything else outside
+quotes, such as `?`, `$`, `:`, `@`, `;`, backticks, `[`, `::`, or
+non-ASCII characters, is refused, and NUL anywhere. Comparisons don't
+chain (`a = b = c` is refused), since targets parse chains
+differently or not at all.
+
+Errors say what was expected and where: a line and column in the
+template written with each hole as `${…}`, and a short excerpt.
+
+Speed and the backends:
+
+- **Linear and allocation-light.** Tokens hold a run number and
+  string indexes rather than copied text; keywords are looked up in
+  one `Map` built once; the tree is plain classes under sealed
+  interfaces, which every backend translates directly (classes in
+  C++, C#, Java, JavaScript, Python, and Rust; tables in Lua).
+- **A depth limit** (say 64 nested parentheses or subqueries) keeps
+  recursion safe on every backend, including Python's recursion limit
+  and threads with small stacks, and refuses hostile input instead of
+  crashing.
+- **Parsing per query.** A tag runs every time its line runs, so each
+  query is parsed afresh: a few microseconds in compiled backends and
+  tens in Python or Lua for a typical query, to be measured. Caching
+  per template needs a per-call-site constant, which Temper doesn't
+  have, or a shared global map, which needs locking Temper can't yet
+  express portably. So the first version doesn't cache, but the tree
+  takes its holes from a separate list, so a cache would only need to
+  keep immutable trees, if measurements call for one.
+
+### The check stage
+
+After parsing, the check walks the tree once for each target, and
+gives the first problem with its position:
+
+- **Names:** every name and alias passes each target's `nameProblem`
+  (63 bytes for PostgreSQL; 64 characters, nothing above U+FFFF, no
+  trailing whitespace, and no `#mysql50#` for MySQL; no NUL anywhere).
+  Bare names must be lowercase, since PostgreSQL folds them while the
+  others don't (open question below); every name renders quoted.
+- **Strings:** every string literal passes each target's
+  `stringProblem` (no NUL except under MySQL's backslash escapes; no
+  lone surrogates).
+- **Numbers:** integer literals fit a signed 64-bit integer (beyond
+  it, SQLite turns to a float and DuckDB fails); decimals have at most
+  18 digits, which DuckDB's `DECIMAL` keeps exactly.
+- **Constructs:** each one the target's renderer supports, in the
+  forms it supports: `LIMIT` inside an `IN` subquery is refused for
+  MySQL, which rejects it, say.
+- **Known traps,** where the text shows them: `x = NULL` (always
+  unknown; use `IS NULL`), `/` without a known float operand, `LIKE`
+  without `ESCAPE` on a pattern that isn't a plain literal, `CASE`
+  branches mixing literal kinds (PostgreSQL and DuckDB refuse them,
+  SQLite and MySQL convert), a `SUBSTR` start below 1, and an `UPDATE`
+  that reads a column it set earlier in the same `SET`, since MySQL
+  assigns left to right.
+
+Narrower targets relax only the checks for the dialects left out.
+The default set is every profile now; a new database (SQL Server,
+say) joins it only in a major version, so an upgrade can't make
+working queries fail.
+
+### Rendering per dialect
+
+One renderer walks the tree, asking a small private table per target
+for the pieces that differ. It writes parentheses around every operand
+that is itself an operator expression (outside `AND` and `OR` chains),
+since precedence differs: SQLite reads `'a' || 1 + 2` as `('a' || 1) +
+2`, PostgreSQL and DuckDB as `'a' || (1 + 2)`. That also means it
+never writes `--` from a minus before a negative number. Both MySQL
+profiles render the same, except for string literals, each quoted by
+its own profile.
+
+| Common | SQLite | PostgreSQL | MySQL and MariaDB | DuckDB | Approach |
+| --- | --- | --- | --- | --- | --- |
+| `name` (bare) | `"name"` | `"name"` | `` `name` `` | `"name"` | Bare names lowercase, all quoted |
+| `TRUE`, `FALSE` | `TRUE`, `FALSE` (1 and 0, from 3.23) | same | same (1 and 0) | same | Same text; results differ, documented |
+| `a \|\| b` | `a \|\| b` | `a \|\| b` | `CONCAT(a, b)` | `a \|\| b` | Emulate: MySQL's `\|\|` is `OR` without `PIPES_AS_CONCAT`; `CONCAT` gives `NULL` on any `NULL`, as `\|\|` does |
+| `LIMIT n OFFSET m` | same | same | same | same | Same |
+| `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` | Emulate, as each manual says |
+| Default `NULL` order | smallest | largest | smallest | last, both directions | Common: smallest (open question); write `NULLS` where it differs |
+| `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x` | `NULLS` only where the default differs; on MySQL, which lacks it, emulate, repeating `x` and its parameters |
+| `CAST(x AS INTEGER)` | `INTEGER` | `BIGINT` | `SIGNED` | `BIGINT` | Type names map; float to integer truncates in SQLite and rounds in the others, and bad text gives 0 in SQLite and MySQL but fails in the others: documented |
+| `CAST(x AS DOUBLE)` | `REAL` | `DOUBLE PRECISION` | `DOUBLE` (MySQL 8.0.17) | `DOUBLE` | Map |
+| `CAST(x AS TEXT)` | `TEXT` | `TEXT` | `CHAR` | `VARCHAR` | Map |
+| `LIKE p ESCAPE '!'` | same | same | same | same | Same; refuse `\` and `'` as the escape (MySQL's backslash mode) |
+| `LIKE p`, no `ESCAPE` | no escape | `\` escapes | `\` escapes | no escape | Allow only a literal pattern without `\` |
+| `LIKE` case | ASCII-insensitive | sensitive | per collation, usually insensitive | sensitive | Document |
+| `7 / 2` | 3 | 3 | 3.5000 | 3.5 | Refuse without a known float operand; integer division later as a function |
+| `x / 0` | `NULL` | error | `NULL` (error in strict-mode writes) | `inf`; `%` fails | Document |
+| `LENGTH(s)` | `length` | `length` | `CHAR_LENGTH` (`LENGTH` counts bytes) | `length` | Map |
+| `UPPER`, `LOWER` | ASCII only (without ICU) | full | full | full | Document |
+| `'a' = 'A'`, trailing spaces | binary | per collation, usually binary | per collation: default ones ignore case, and `PAD SPACE` ones trailing spaces | binary | Document; collation is data |
+| Comparison results | 1 and 0 | `true` and `false` | 1 and 0 | `true` and `false` | Document; adapters may convert |
+| `1.5` | a float | exact `numeric` | exact `DECIMAL` | exact `DECIMAL` | Document |
+| `AVG` of integers | float | `numeric` | `DECIMAL` | `DOUBLE` | Document |
+| A `$1` with no context | n/a | may fail: type unknown | n/a | n/a | Write a cast from the value's type (open question) |
+| Subquery in `FROM` | alias optional | required before 16 | required | optional | Grammar requires an alias |
+
+Sources (to recheck, since the container's firewall blocked the
+manuals this round): SQLite's [`SELECT`](https://www.sqlite.org/lang_select.html),
+[expressions](https://www.sqlite.org/lang_expr.html), and
+[datatypes](https://www.sqlite.org/datatype3.html); PostgreSQL's
+[lexical structure](https://www.postgresql.org/docs/current/sql-syntax-lexical.html)
+(name folding, numeric constants, and precedence),
+[pattern matching](https://www.postgresql.org/docs/current/functions-matching.html),
+[sorting](https://www.postgresql.org/docs/current/queries-order.html),
+[`LIMIT`](https://www.postgresql.org/docs/current/queries-limit.html),
+and [math functions](https://www.postgresql.org/docs/current/functions-math.html);
+MySQL's [`SELECT`](https://dev.mysql.com/doc/refman/8.4/en/select.html),
+[`UPDATE`](https://dev.mysql.com/doc/refman/8.4/en/update.html),
+[`LIKE`](https://dev.mysql.com/doc/refman/8.4/en/string-comparison-functions.html),
+[casts](https://dev.mysql.com/doc/refman/8.4/en/cast-functions.html),
+[arithmetic](https://dev.mysql.com/doc/refman/8.4/en/arithmetic-functions.html),
+[sorting](https://dev.mysql.com/doc/refman/8.4/en/sorting-rows.html),
+[name case](https://dev.mysql.com/doc/refman/8.4/en/identifier-case-sensitivity.html),
+and [SQL modes](https://dev.mysql.com/doc/refman/8.4/en/sql-mode.html);
+MariaDB's [`CAST`](https://mariadb.com/kb/en/cast/) and
+[SQL modes](https://mariadb.com/kb/en/sql-mode/); and DuckDB's
+[`ORDER BY`](https://duckdb.org/docs/current/sql/query_syntax/orderby),
+[pattern matching](https://duckdb.org/docs/current/sql/functions/pattern_matching),
+[numeric functions](https://duckdb.org/docs/current/sql/functions/numeric),
+and [casting](https://duckdb.org/docs/current/sql/expressions/cast).
+The SQLite and DuckDB columns were also checked on SQLite 3.45.1 and
+DuckDB 2.0.0; the PostgreSQL and MySQL ones come from their manuals,
+and the engine tests must confirm each before the renderer relies on
+it.
+
+Empty strings and `NULL` are distinct on all four; Oracle, later,
+differs. Prior art compiles one tree per dialect the same way (SQLGlot,
+SQLAlchemy, Knex, and jOOQ, whose commercial dialects make it a source
+of ideas only); Wherewith copies none of their code or tables.
+
+### Testing
+
+- **Unit tests in Temper**, on every backend: each construct's
+  canonical form and its rendering for each profile; every template
+  mistake and check refusal, with its position; and each rendering
+  passing that database's own `QueryBuilder` lexer, a cheap oracle
+  that the output reads as one statement with holes in code.
+- **The same query on every engine:** a corpus of common queries runs
+  in `tests/engines/` against a fixture table with `NULL`s, negative
+  numbers, mixed case, trailing spaces, and non-ASCII text, on SQLite
+  and DuckDB in the `py` job and PostgreSQL and MariaDB in the
+  `engines` job, plus a MySQL 8.4 service container. Results are
+  normalized (booleans to integers, decimals to floats) and must
+  match across engines; documented differences are asserted to still
+  differ, so the table above can't go stale.
+- **Fuzzing,** seeded in CI and longer locally: a grammar-based
+  generator makes random subset queries that must parse, print back
+  canonically to the same tree, render for each target, be accepted
+  by each engine, and give matching results; and mutations of valid
+  templates (dropped, swapped, or inserted tokens and characters) must
+  parse or fail with a position, never crash or hang.
+
+### Open questions for the common dialect
+
+1. **Tag name:** `sql`, `common`, `portable`, or `anysql`? Recommended:
+   `sql`, short and the obvious default; imports are explicit, so a
+   clash is local.
+2. **`NULL` order when `ORDER BY` doesn't say:** smallest (SQLite's and
+   MySQL's), largest (PostgreSQL's), or required? Recommended:
+   smallest, since that costs nothing on SQLite and MySQL, where the
+   emulation is slowest, and only an explicit `NULLS` on PostgreSQL
+   and DuckDB.
+3. **Bare names:** require lowercase, fold to lowercase, or write them
+   bare? Recommended: require lowercase and quote on output; folding
+   would hide mismatches with MySQL's case-sensitive table names, and
+   bare output needs every target's reserved words.
+4. **Division:** refuse `/` without a known float operand (a float
+   value, a decimal literal, or a `CAST` to `DOUBLE`), or only
+   document it? Recommended: refuse, and add integer division later
+   as a function (`/` in SQLite and PostgreSQL, `DIV` in MySQL, `//` in
+   DuckDB, all truncating).
+5. **`LIKE` without `ESCAPE`:** allow it only for literal patterns
+   without `\`, always require `ESCAPE`, or make `\` the common
+   default? Recommended: the first; a `\` default can't be written for
+   the default `mysql` profile in every mode.
+6. **`\` in string literals for the `mysql` profile:** refuse, bind
+   such literals as parameters, or accept the extra backslashes under
+   `NO_BACKSLASH_ESCAPES`? Recommended: refuse, with a hint to bind the
+   value; `mysqlNoBackslashEscapes` takes them.
+7. **Expression fragments:** let `sql"active AND age > ${n}"` parse as
+   an expression that nests where one goes, for dynamic filters?
+   Recommended: yes, right after statements.
+8. **PostgreSQL parameter types:** write `CAST($1 AS BIGINT)` and the
+   like, from the value's type, where nothing else gives one (the
+   select list, `COALESCE`, `CASE` results, and `||`)? Recommended:
+   yes, only there, checked by the engine tests.
+9. **`UPDATE` and `DELETE` without `WHERE`:** allow? Recommended:
+   allow, as SQL does; maybe an opt-in check later.
+10. **Collation:** document MySQL's case-insensitive comparisons, or
+    write `COLLATE utf8mb4_bin`? Recommended: document; the collation
+    is the schema's choice, and forcing one defeats indexes.
+11. **Minimum versions:** recommended: SQLite 3.30, the oldest
+    PostgreSQL still supported, MySQL 8.0.17 (tested on 8.4), MariaDB
+    10.6, and DuckDB 1.0, each tested on current releases.
+
+### Plan
+
+Each chunk is one commit, tested on every backend:
+
+1. **Lexer and tag** (small, ~400 lines with tests): `Dialect.common`,
+   the `sql` tag, tokens, holes by kind, and errors with positions.
+2. **Expressions** (medium, ~700): the tree, the expression parser,
+   the canonical printer, and the depth limit.
+3. **Statements** (medium, ~600): `SELECT`, `INSERT`, `UPDATE`, and
+   `DELETE`, subqueries, nesting, and builder targets.
+4. **Rendering** (medium to large, ~800): every profile, with the
+   table above, and the per-database lexer oracle.
+5. **Check stage** (medium, ~500): every rule above, at construction
+   and at render.
+6. **Engines** (medium, ~500 lines of Python): the shared corpus on
+   all engines, and a MySQL service in CI.
+7. **Fuzzing** (small to medium): the generator and mutations.
+8. **Docs** (small): the README, the site, and the demos lead with the
+   common dialect.
 
 ## Parameters per driver
 
