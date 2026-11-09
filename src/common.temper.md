@@ -6,9 +6,10 @@ knows: a strict subset that each one reads the same way. The
 Built so far: the `sql` tag, `Dialect.common`, the lexer, which reads
 a template into tokens and refuses anything outside the subset, with
 the line and column of the problem, and the parser for
-[expressions](common-expressions.temper.md), with the checks an
-expression alone can show. Statements, the rest of the check stage,
-and rendering for each database come next.
+[expressions](common-expressions.temper.md) and
+[statements](common-statements.temper.md), with the checks they show.
+The rest of the check stage, and rendering for each database, come
+next.
 
 ## Profile
 
@@ -20,22 +21,22 @@ accepts.
 ## Queries
 
 The `sql` tag makes a [Query](query.temper.md) whose dialect is
-`Dialect.common`, checking the template with the common lexer:
+`Dialect.common`, lexing, parsing, and checking the template when it
+runs, and panicking on a problem:
 
 ```temper inert
-let users = Identifier.named("users") orelse panic();
-let q = sql"SELECT name FROM ${users} WHERE id = ${42}";
+let users = Identifier.named("Users") orelse panic();
+let q = sql"select name from ${users} where id = ${42}";
 q.dialect; // Dialect.common
 q.render(Dialect.common, PlaceholderStyle.question).sql;
-// SELECT name FROM "users" WHERE id = ?
+// SELECT name FROM "Users" WHERE id = ?
 ```
 
-For now a common query renders only for `Dialect.common`, writing its
-text as it was written, with names quoted the shared core's way and
-values as placeholders; for any other dialect, `render` bubbles with
-`renderProblem` saying that isn't built yet. Exact rendering for each
-database needs the statement parser, so that a query never renders to
-SQL that could mean something else.
+For now a common query renders only for `Dialect.common`, as canonical
+common SQL written from its tree: keywords in capitals, names bare
+where they can be, comments gone, and values as placeholders. For any
+other dialect, `render` bubbles with `renderProblem` saying that isn't
+built yet.
 
     export class SqlTag {
       private b: QueryBuilder = new QueryBuilder(Dialect.common);
@@ -79,13 +80,13 @@ and refuses everything outside the subset:
   but NUL, since they never reach the rendered SQL.
 - **Strings:** `'…'`, with `'` doubled and no backslash escapes, and no
   prefix (`E'…'`, `X'…'`, `N'…'`, or MySQL's `_utf8mb4'…'`). Each must
-  be a string every database takes (each one's `stringProblem`), and,
-  for MySQL's default profile, hold no `\`, which MySQL reads as an
-  escape in its default mode only: bind such text as a value.
-- **Quoted names:** `"…"`, with `"` doubled, each a name every database
-  takes (each one's `nameProblem`): not empty, at most 63 UTF-8 bytes
-  and 64 characters, nothing above U+FFFF, no trailing whitespace, and
-  no `#mysql50#` prefix.
+  be a string every target takes (each one's `stringProblem`), and,
+  when MySQL's default profile is one, hold no `\`, which MySQL reads
+  as an escape in its default mode only: bind such text as a value.
+- **Quoted names:** `"…"`, with `"` doubled, each a name every target
+  takes (each one's `nameProblem`). For every profile, that's not
+  empty, at most 63 UTF-8 bytes and 64 characters, nothing above
+  U+FFFF, no trailing whitespace, and no `#mysql50#` prefix.
 - **Words:** `[A-Za-z_][A-Za-z0-9_]*`. Keywords are read without regard
   to case. Any other word is a bare name, which must be lowercase,
   since PostgreSQL folds names to lowercase while the others keep their
@@ -104,15 +105,16 @@ and refuses everything outside the subset:
   `==`, or `->`, other control characters, non-ASCII characters, and
   NUL anywhere.
 
-Holes are tokens of their kind: a value, a name (an `Identifier`), or
-a nested query. The expression parser decides where each kind goes in
-an expression; until statements parse too, the lexer checks their
-places as far as the tokens beside them show:
+Holes are tokens of their kind: a value or a name (an `Identifier`).
+A nested query's own tokens go in, between a start and an end token,
+so the parser sees the whole statement and the checks see into it; the
+grammar decides where each kind may go. The tokens inside a nested
+query take the place of its hole, for problems.
 
-- A nested query goes in parentheses, alone: `(${q})`.
-- Only a name goes next to `.`, or after `AS`, `FROM`, `JOIN`, `INTO`,
-  `UPDATE`, or `SET`.
-- Only a value goes after `LIMIT` or `OFFSET`.
+Whether strings and names suit each target database is checked once
+the template is whole, since a builder's
+[targets](query.temper.md#querybuilder) can change until then
+(`targetProblem`).
 
 A problem gives its place in the template written with each hole as
 `${…}`: the line and column (counting code points from 1), and a short
@@ -123,7 +125,7 @@ run (the text between two holes), and string indexes into it.
 
     class CommonToken(
       public kind: Int,
-      // The text run it's in, or -1 for a hole.
+      // The text run it's in, or -1 for a hole or a nested query's ends.
       public run: Int,
       public begin: StringIndex,
       public end: StringIndex,
@@ -148,7 +150,8 @@ Token kinds.
     let tokenSymbol = 8;
     let tokenValueHole = 9;
     let tokenNameHole = 10;
-    let tokenQueryHole = 11;
+    let tokenQueryStart = 11;
+    let tokenQueryEnd = 12;
 
 The words with a meaning, lowercase: the subset's keywords, and words
 saved for constructs planned later, which are reserved; and function
@@ -203,17 +206,13 @@ The lexer reads a run at a time, as the builder gives them, and keeps
 every run, since its tokens point into them.
 
     class CommonLexer extends SqlLexer {
-      // The databases a common query must mean the same on.
-      private targets: List<Dialect> = [
-        Dialect.sqlite, Dialect.postgres, Dialect.mysql, Dialect.mysqlNoBackslashEscapes,
-        Dialect.duckdb,
-      ];
       public tokens: ListBuilder<CommonToken> = new ListBuilder<CommonToken>();
       public runs: ListBuilder<String> = new ListBuilder<String>();
       // The runs and holes in order, for excerpts.
       private pieces: ListBuilder<String> = new ListBuilder<String>();
       private var state: Int = lexCode;
-      // Where the next code point is.
+      // Where the next code point is, as shown in problems; inside a
+      // nested query, where its hole is.
       private var line: Int = 1;
       private var column: Int = 1;
       private var offset: Int = 0;
@@ -221,10 +220,12 @@ every run, since its tokens point into them.
       private var openLine: Int = 0;
       private var openColumn: Int = 0;
       private var openOffset: Int = 0;
-      // Where the last token ended, as an offset.
+      // Code points read, nested queries' too, and where the last token
+      // ended among them.
+      private var read: Int = 0;
       private var lastEnd: Int = -1;
-      // A nested query's hole, until the `)` after it.
-      private var queryHole: CommonToken? = null;
+      // How many nested queries the lexer is in.
+      private var nested: Int = 0;
       // The first problem in this run or hole.
       private var problem: String? = null;
 
@@ -234,7 +235,7 @@ every run, since its tokens point into them.
       public scan(text: String): String? {
         problem = null;
         runs.add(text);
-        pieces.add(text);
+        if (nested == 0) { pieces.add(text); }
         let run = runs.length - 1;
         let end = text.end;
         var i = String.begin;
@@ -272,32 +273,45 @@ every run, since its tokens point into them.
         problem
       }
 
-A hole of a kind, from the [builder](query.temper.md). It's a token,
-written `${…}` for positions.
+A value or name hole, from the [builder](query.temper.md). It's a
+token, written `${…}` for positions.
 
       public hole(kind: Int): String? {
         problem = null;
-        let last = lastToken();
-        pieces.add(holeMark);
-        if (kind == holeQuery && !isSymbol(last, char'(')) {
-          report("nested query outside parentheses", line, column, offset);
-        } else if (kind == holeValue && (isSymbol(last, char'.') || namedNext(last))) {
-          report("value where a name goes", line, column, offset);
-        } else if (kind == holeName && (wordIs(last, "limit") || wordIs(last, "offset"))) {
-          report("name where a value goes", line, column, offset);
-        }
-        let tokenKind = if (kind == holeQuery) {
-          tokenQueryHole
-        } else if (kind == holeName) {
-          tokenNameHole
-        } else {
-          tokenValueHole
-        };
+        let tokenKind = if (kind == holeName) { tokenNameHole } else { tokenValueHole };
         let token = new CommonToken(tokenKind, -1, String.begin, String.begin, line, column, offset, "");
-        add(token, offset + 4);
-        if (kind == holeQuery) { queryHole = token; }
-        column += 4;
-        offset += 4;
+        read += 4;
+        add(token, read);
+        if (nested == 0) {
+          pieces.add(holeMark);
+          column += 4;
+          offset += 4;
+        }
+        problem
+      }
+
+A nested query: `beginQuery`, then its parts, as text and holes, then
+`endQuery`, which refuses a query that ends inside a quote or comment.
+
+      public beginQuery(): Void {
+        problem = null;
+        add(new CommonToken(tokenQueryStart, -1, String.begin, String.begin, line, column, offset, ""), read);
+        if (nested == 0) { pieces.add(holeMark); }
+        nested += 1;
+      }
+
+      public endQuery(): String? {
+        problem = null;
+        if (state != lexCode) {
+          report("nested query ends inside a quote or comment", line, column, offset);
+          state = lexCode;
+        }
+        add(new CommonToken(tokenQueryEnd, -1, String.begin, String.begin, line, column, offset, ""), read);
+        nested -= 1;
+        if (nested == 0) {
+          column += 4;
+          offset += 4;
+        }
         problem
       }
 
@@ -307,10 +321,6 @@ written `${…}` for positions.
 
       public endProblem(): String? {
         problem = null;
-        let hole = queryHole;
-        if (hole != null) {
-          report("nested query outside parentheses", hole.line, hole.column, hole.offset);
-        }
         let open = if (state == lexSingleQuoted) {
           "string not closed"
         } else if (state == lexDoubleQuoted) {
@@ -330,13 +340,16 @@ refuses NUL, wherever it is.
       private step(text: String, i: StringIndex): StringIndex {
         let c = text[i];
         if (c == 0) { report("NUL in template text", line, column, offset); }
-        if (c == char'\n') {
-          line += 1;
-          column = 1;
-        } else {
-          column += 1;
+        read += 1;
+        if (nested == 0) {
+          if (c == char'\n') {
+            line += 1;
+            column = 1;
+          } else {
+            column += 1;
+          }
+          offset += 1;
         }
-        offset += 1;
         text.next(i)
       }
 
@@ -388,8 +401,7 @@ A block comment, from its `/*`.
         i
       }
 
-A string or quoted name, from its opening quote. Its value, with the
-doubled quotes made single, must suit every target.
+A string or quoted name, from its opening quote.
 
       private quoted(text: String, run: Int, start: StringIndex): StringIndex {
         let quote = text[start];
@@ -400,38 +412,27 @@ doubled quotes made single, must suit every target.
         let last = lastToken();
         if (last != null) {
           let wordy = last.kind == tokenKeyword || last.kind == tokenWord || last.kind == tokenName;
-          if (isString && lastEnd == offset && wordy) {
+          if (isString && lastEnd == read && wordy) {
             report("prefixed string", last.line, last.column, last.offset);
           }
         }
         let end = text.end;
-        let value = new StringBuilder();
         var i = step(text, start);
-        var from = i;
         while (i < end) {
           if (text[i] == quote) {
             let next = text.next(i);
             if (next < end && text[next] == quote) {
-              value.appendBetween(text, from, next);
               i = step(text, step(text, i));
-              from = i;
               continue;
             }
-            value.appendBetween(text, from, i);
             i = step(text, i);
             add(
               new CommonToken(
                 if (isString) { tokenString } else { tokenQuotedName },
                 run, start, i, startLine, startColumn, startOffset, "",
               ),
-              offset,
+              read,
             );
-            let found = if (isString) {
-              stringTargetProblem(value.toString())
-            } else {
-              nameTargetProblem(value.toString())
-            };
-            if (found != null) { report(found, startLine, startColumn, startOffset); }
             return i;
           }
           i = step(text, i);
@@ -443,11 +444,32 @@ doubled quotes made single, must suit every target.
         i
       }
 
+`targetProblem` gives the first string or name, in the order written,
+that some target database can't take, or null. A target that reads
+backslash escapes (MySQL's default profile) refuses a string with `\`,
+since `NO_BACKSLASH_ESCAPES` reads it differently.
+
+      public targetProblem(targets: List<Dialect>): String? {
+        for (var i = 0; i < tokens.length; i += 1) {
+          let t = tokens[i];
+          let kind = t.kind;
+          let found = if (kind == tokenString) {
+            stringTargetProblem(stringValue(t), targets)
+          } else if (kind == tokenQuotedName || kind == tokenName) {
+            nameTargetProblem(nameValue(t), targets)
+          } else {
+            null
+          };
+          if (found != null) { return located(found, t.line, t.column, t.offset); }
+        }
+        null
+      }
+
 What's wrong with a string or name for some target, or null.
 
       // Index loops, since Temper can't yet return from a for-of loop
       // in a method.
-      private stringTargetProblem(value: String): String? {
+      private stringTargetProblem(value: String, targets: List<Dialect>): String? {
         for (var t = 0; t < targets.length; t += 1) {
           let d = targets[t];
           let found = d.stringProblem(value);
@@ -459,7 +481,7 @@ What's wrong with a string or name for some target, or null.
         null
       }
 
-      private nameTargetProblem(name: String): String? {
+      private nameTargetProblem(name: String, targets: List<Dialect>): String? {
         for (var t = 0; t < targets.length; t += 1) {
           let d = targets[t];
           let found = d.nameProblem(name);
@@ -540,7 +562,7 @@ of at most 18 digits, leading zeros aside.
         } else if (kind == tokenDecimal && digits > 18) {
           report("decimal with more than 18 digits", startLine, startColumn, startOffset);
         }
-        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset, ""), offset);
+        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset, ""), read);
         i
       }
 
@@ -567,15 +589,10 @@ A keyword, or a bare name, which must be lowercase.
         }
         let name = key.toString();
         var kind = commonWords.getOr(name, tokenName);
-        if (kind == tokenName) {
-          if (upper) {
-            report("bare name not lowercase; quote it to keep its case", startLine, startColumn, startOffset);
-          } else {
-            let found = nameTargetProblem(name);
-            if (found != null) { report(found, startLine, startColumn, startOffset); }
-          }
+        if (kind == tokenName && upper) {
+          report("bare name not lowercase; quote it to keep its case", startLine, startColumn, startOffset);
         }
-        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset, name), offset);
+        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset, name), read);
         i
       }
 
@@ -619,12 +636,6 @@ An operator, or a refused character.
           if (isDigit(following)) {
             report("decimal without a digit before its point", startLine, startColumn, startOffset);
           }
-          let last = lastToken();
-          if (last != null) {
-            if (last.kind == tokenValueHole || last.kind == tokenQueryHole) {
-              report("value where a name goes", last.line, last.column, last.offset);
-            }
-          }
         } else if (c == char'?' || c == char'$') {
           message = "${shown(c)} outside quotes; put values in holes";
         } else if (c == char';') {
@@ -649,56 +660,19 @@ An operator, or a refused character.
         }
         var i = step(text, start);
         if (size == 2) { i = step(text, i); }
-        add(new CommonToken(tokenSymbol, run, start, i, startLine, startColumn, startOffset, ""), offset);
+        add(new CommonToken(tokenSymbol, run, start, i, startLine, startColumn, startOffset, ""), read);
         i
       }
 
-`add` adds a token ending at `after`, first checking that a nested
-query's hole is followed by its `)`.
+`add` adds a token ending at `after`, counting code points read.
 
       private add(token: CommonToken, after: Int): Void {
-        let hole = queryHole;
-        if (hole != null) {
-          queryHole = null;
-          let closes = token.kind == tokenSymbol && runs[token.run][token.begin] == char')';
-          if (!closes) {
-            report("nested query outside parentheses", hole.line, hole.column, hole.offset);
-          }
-        }
         tokens.add(token);
         lastEnd = after;
       }
 
       private lastToken(): CommonToken? {
         if (tokens.isEmpty) { null } else { tokens[tokens.length - 1] }
-      }
-
-Whether a token is the operator `c`, or the keyword `lower`.
-
-      private isSymbol(token: CommonToken?, c: Int): Boolean {
-        token != null && token.kind == tokenSymbol && runs[token.run][token.begin] == c
-      }
-
-      private wordIs(token: CommonToken?, lower: String): Boolean {
-        if (token != null) {
-          if (token.kind != tokenKeyword) { return false; }
-          let text = runs[token.run];
-          var k = String.begin;
-          for (var i = token.begin; i < token.end; i = text.next(i)) {
-            if (!lower.hasIndex(k) || lowercased(text[i]) != lower[k]) { return false; }
-            k = lower.next(k);
-          }
-          !lower.hasIndex(k)
-        } else {
-          false
-        }
-      }
-
-Whether a name, not a value, comes after a token.
-
-      private namedNext(token: CommonToken?): Boolean {
-        wordIs(token, "as") || wordIs(token, "from") || wordIs(token, "join") ||
-          wordIs(token, "into") || wordIs(token, "update") || wordIs(token, "set")
       }
 
 `tokenText` is a token's text as written, or `${…}` for a hole.

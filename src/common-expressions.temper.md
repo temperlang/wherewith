@@ -3,9 +3,10 @@
 Expressions in [the common dialect](common.temper.md): a parser that
 reads the common lexer's tokens into a syntax tree, the checks an
 expression alone can show, and a printer that writes the tree back as
-canonical common SQL. Statements come next, and use these for their
-`WHERE` clauses, columns, and values; rendering for each database
-writes from the same tree.
+canonical common SQL. [Statements](common-statements.temper.md) use
+these for their columns, conditions, and values, and expressions hold
+statements in turn, as subqueries; rendering for each database will
+write from the same tree.
 
 The grammar, with keywords in any case:
 
@@ -25,7 +26,7 @@ unary     = ("-" | "+") unary | primary
 primary   = INTEGER | DECIMAL | STRING | "NULL" | "TRUE" | "FALSE"
           | VALUE_HOLE | column | "(" expr ")" | subquery
           | "EXISTS" subquery | case | cast | call
-subquery  = "(" QUERY_HOLE ")"
+subquery  = "(" (select | QUERY) ")"
 case      = "CASE" [expr] ("WHEN" expr "THEN" expr)+ ["ELSE" expr] "END"
 cast      = "CAST" "(" expr "AS" ("INTEGER" | "DOUBLE" | "TEXT") ")"
 call      = "COUNT" "(" "*" ")" | FUNCTION "(" ["DISTINCT"] [expr {"," expr}] ")"
@@ -54,8 +55,9 @@ refuses it rather than pick one reading:
   `UPPER`. `DISTINCT` goes only in an aggregate (`AVG`, `COUNT`,
   `MAX`, `MIN`, and `SUM`), and `*` only in `COUNT(*)`.
 - **Holes by kind:** a value goes wherever an expression does; a name
-  only in a column (`${t}.${c}`); and a nested query only as
-  `(${q})`, in `IN (${q})`, or after `EXISTS`.
+  only in a column (`${t}.${c}`); and a nested query, which must be a
+  `SELECT`, only as `(${q})`, in `IN (${q})`, or after `EXISTS`, as a
+  `SELECT` written in place may.
 - **Depth:** nesting stops at 64 levels, counting parentheses,
   prefixes, and operators, so recursion is safe on every backend.
 
@@ -98,9 +100,11 @@ hole.
       public column: CommonName,
     ) extends CommonExpr {}
 
-A nested query, `(${q})`, which `EXISTS` and `IN` take too.
+A subquery, `(SELECT …)` or `(${q})`, which `EXISTS` and `IN` take
+too. A nested query's tokens are in the template's, so its tree is
+here as if written in place.
 
-    class SubqueryExpr(public at: CommonToken, public depth: Int, public hole: Int) extends CommonExpr {}
+    class SubqueryExpr(public at: CommonToken, public depth: Int, public query: SelectStatement) extends CommonExpr {}
 
     class ExistsExpr(public at: CommonToken, public depth: Int, public query: SubqueryExpr) extends CommonExpr {}
 
@@ -251,13 +255,15 @@ How deep an expression may nest.
 A recursive-descent parser over a lexer's tokens, once the lexer has
 read the whole template without a problem. It bubbles on the first
 problem, which `problem` then gives, placed as the lexer places its
-own.
+own. Its token helpers are public for the
+[statement parser](common-statements.temper.md), which works on the
+same tokens.
 
-    class CommonParser(private lexer: CommonLexer) {
+    class CommonParser(public lexer: CommonLexer) {
       private var pos: Int = 0;
-      // Holes taken so far.
-      private var holes: Int = 0;
-      private var nesting: Int = 0;
+      // Value and name holes taken so far.
+      public var holes: Int = 0;
+      public var nesting: Int = 0;
       // The arithmetic operator outside parentheses in the operand just
       // read, if any, since `||` beside one needs parentheses.
       private var bareAt: CommonToken? = null;
@@ -276,7 +282,13 @@ own.
         e
       }
 
-      private expression(): CommonExpr throws Bubble {
+`parseStatement` reads the whole template as one statement.
+
+      public parseStatement(): CommonStatement throws Bubble {
+        new StatementParser(this).whole()
+      }
+
+      public expression(): CommonExpr throws Bubble {
         enter();
         let e = disjunction();
         nesting -= 1;
@@ -390,10 +402,9 @@ A predicate: at most one comparison, `IS`, `IN`, `BETWEEN`, or `LIKE`.
 
       private inPredicate(at: CommonToken, left: CommonExpr, negated: Boolean): CommonExpr throws Bubble {
         expectSymbol(char'(');
-        let first = peek();
-        if (first != null && first.kind == tokenQueryHole) {
+        if (startsQuery(peek())) {
           let query = subquery();
-          return new InQueryExpr(at, left.depth + 1, left, negated, query);
+          return new InQueryExpr(at, larger(left.depth, query.depth) + 1, left, negated, query);
         }
         let items = new ListBuilder<CommonExpr>();
         var depth = left.depth;
@@ -492,6 +503,7 @@ A predicate: at most one comparison, `IS`, `IN`, `BETWEEN`, or `LIKE`.
           return new LiteralExpr(t, 1, literal);
         }
         if (kind == tokenValueHole) {
+          if (isSymbol(peekAt(1), char'.')) { report("value where a name goes", t); bubble() }
           advance();
           return new ValueExpr(t, 1, holes - 1);
         }
@@ -499,14 +511,13 @@ A predicate: at most one comparison, `IS`, `IN`, `BETWEEN`, or `LIKE`.
           if (isSymbol(peekAt(1), char'(')) { return call(); }
           return column();
         }
-        if (kind == tokenQueryHole) {
+        if (kind == tokenQueryStart) {
           report("nested query needs its own parentheses", t);
           bubble()
         }
         if (isSymbol(t, char'(')) {
           advance();
-          let inner = peek();
-          if (inner != null && inner.kind == tokenQueryHole) { return subquery(); }
+          if (startsQuery(peek())) { return subquery(); }
           let e = expression();
           expectSymbol(char')');
           return e;
@@ -530,12 +541,16 @@ A predicate: at most one comparison, `IS`, `IN`, `BETWEEN`, or `LIKE`.
             advance();
             expectSymbol(char'(');
             let inner = peek();
-            if (inner == null || inner.kind != tokenQueryHole) { report("expected a nested query", inner); bubble() }
+            if (!startsQuery(inner)) { report("expected SELECT or a nested query", inner); bubble() }
             let query = subquery();
-            return new ExistsExpr(t, 2, query);
+            return deep(new ExistsExpr(t, query.depth + 1, query));
           }
           if (word == "not") {
             report("NOT here needs parentheses", t);
+            bubble()
+          }
+          if (word == "select") {
+            report("a subquery needs its own parentheses", t);
             bubble()
           }
         }
@@ -543,13 +558,32 @@ A predicate: at most one comparison, `IS`, `IN`, `BETWEEN`, or `LIKE`.
         bubble()
       }
 
-A nested query's hole, just after its `(`.
+A subquery, just after its `(`: a `SELECT`, or a nested query, which
+must be one, alone in the parentheses.
 
-      private subquery(): SubqueryExpr throws Bubble {
-        let t = advance();
-        let hole = holes - 1;
-        expectSymbol(char')');
-        new SubqueryExpr(t, 1, hole)
+      public subquery(): SubqueryExpr throws Bubble {
+        let t = need("expected SELECT or a nested query");
+        enter();
+        let statements = new StatementParser(this);
+        let query = if (t.kind == tokenQueryStart) { statements.nestedSelect() } else { statements.select() };
+        nesting -= 1;
+        let close = peek();
+        if (!isSymbol(close, char')')) {
+          if (t.kind == tokenQueryStart) {
+            report("nested query needs its own parentheses", t);
+          } else {
+            report("expected )", close);
+          }
+          bubble()
+        }
+        advance();
+        let e = new SubqueryExpr(t, query.depth + 1, query);
+        if (e.depth > maxDepth) { report(deepMessage, t); bubble() }
+        e
+      }
+
+      public startsQuery(t: CommonToken?): Boolean {
+        t != null && (t.kind == tokenQueryStart || isKeyword(t, "select"))
       }
 
       private column(): CommonExpr throws Bubble {
@@ -562,11 +596,18 @@ A nested query's hole, just after its `(`.
         new ColumnExpr(first.token, 1, first, second)
       }
 
-      private name(): CommonName throws Bubble {
+      public name(): CommonName throws Bubble {
         let t = need("expected a name");
         let kind = t.kind;
         if (kind != tokenName && kind != tokenQuotedName && kind != tokenWord && kind != tokenNameHole) {
-          report("expected a name", t);
+          let message = if (kind == tokenValueHole) {
+            "value where a name goes"
+          } else if (kind == tokenQueryStart) {
+            "nested query where a name goes"
+          } else {
+            "expected a name"
+          };
+          report(message, t);
           bubble()
         }
         if (kind == tokenWord && lexer.tokenText(t) != t.word) {
@@ -678,34 +719,34 @@ A nested query's hole, just after its `(`.
 
 ### Tokens
 
-      private peek(): CommonToken? { peekAt(0) }
+      public peek(): CommonToken? { peekAt(0) }
 
 `need` gives the next token, or bubbles with a message at the end.
 
-      private need(message: String): CommonToken throws Bubble {
+      public need(message: String): CommonToken throws Bubble {
         let t = peek();
         if (t != null) { return t; }
         report(message, null);
         bubble()
       }
 
-      private peekAt(ahead: Int): CommonToken? {
+      public peekAt(ahead: Int): CommonToken? {
         let tokens = lexer.tokens;
         if (pos + ahead < tokens.length) { tokens[pos + ahead] } else { null }
       }
 
-      private advance(): CommonToken {
+      public advance(): CommonToken {
         let t = lexer.tokens[pos];
         pos += 1;
-        if (t.run < 0) { holes += 1; }
+        if (t.kind == tokenValueHole || t.kind == tokenNameHole) { holes += 1; }
         t
       }
 
-      private isKeyword(t: CommonToken?, word: String): Boolean {
+      public isKeyword(t: CommonToken?, word: String): Boolean {
         t != null && t.kind == tokenKeyword && t.word == word
       }
 
-      private isSymbol(t: CommonToken?, c: Int): Boolean {
+      public isSymbol(t: CommonToken?, c: Int): Boolean {
         t != null && t.kind == tokenSymbol && lexer.runs[t.run][t.begin] == c
       }
 
@@ -768,7 +809,7 @@ Whether a token starts a predicate, which can't follow another.
         isKeyword(t, "in") || isKeyword(t, "between") || isKeyword(t, "like")
       }
 
-      private expectSymbol(c: Int): Void throws Bubble {
+      public expectSymbol(c: Int): Void throws Bubble {
         let t = peek();
         if (!isSymbol(t, c)) {
           report("expected ${shown(c)}", t);
@@ -779,7 +820,7 @@ Whether a token starts a predicate, which can't follow another.
 
 ### Depth and problems
 
-      private enter(): Void throws Bubble {
+      public enter(): Void throws Bubble {
         nesting += 1;
         if (nesting > maxDepth) {
           report(deepMessage, peek());
@@ -797,7 +838,7 @@ Whether a token starts a predicate, which can't follow another.
 
 `report` places a problem at a token, or at the end for none.
 
-      private report(message: String, t: CommonToken?): Void {
+      public report(message: String, t: CommonToken?): Void {
         if (problem != null) { return; }
         problem = if (t != null) {
           lexer.located(message, t.line, t.column, t.offset)
@@ -849,8 +890,9 @@ How many arguments each function takes, and how a problem says so.
 
 ## Checks
 
-What an expression alone shows about whether it means the same on
-every database, given the values in its holes. Kinds are what the text
+What an expression shows about whether it means the same on every
+database, given the values in its holes. Subqueries are checked as
+[statements](common-statements.temper.md) are. Kinds are what the text
 and values show: a literal's, a value's, or an operator's result, and
 unknown for columns and nested queries. The checker refuses:
 
@@ -891,8 +933,17 @@ The kinds:
     let kindFloat = 4;
     let kindText = 5;
 
-    class CommonChecker(private lexer: CommonLexer, private values: List<SqlValue?>) {
-      private var aggregates: Int = 0;
+The checker takes the template's holes, as a `QueryParam` or a
+`QueryName` each, and the target databases, which the statement checks
+need.
+
+    class CommonChecker(
+      public lexer: CommonLexer,
+      public holes: List<QueryPart>,
+      public targets: List<Dialect>,
+    ) {
+      // Aggregates around the expression being checked.
+      public var aggregates: Int = 0;
       public var problem: String? = null;
 
 `check` gives an expression's kind, or bubbles with `problem`.
@@ -914,7 +965,10 @@ The kinds:
           }
         } else if (e is ValueExpr) {
           valueKind(e.hole)
+        } else if (e is SubqueryExpr) {
+          new StatementChecker(this).subquery(e.query)
         } else if (e is ExistsExpr) {
+          check(e.query);
           kindBoolean
         } else if (e is UnaryExpr) {
           let k = check(e.operand);
@@ -942,7 +996,10 @@ The kinds:
           }
           kindBoolean
         } else if (e is InQueryExpr) {
-          check(e.operand);
+          let k = check(e.operand);
+          let query = e.query;
+          compare(k, check(query), query.at);
+          new StatementChecker(this).inSubquery(query.query);
           kindBoolean
         } else if (e is BetweenExpr) {
           let k = check(e.operand);
@@ -962,9 +1019,8 @@ The kinds:
         }
       }
 
-      private valueKind(hole: Int): Int {
-        if (hole < 0 || hole >= values.length) { return kindUnknown; }
-        let value = values[hole];
+      public valueKind(hole: Int): Int {
+        let value = holeValue(hole);
         if (value is SqlText) {
           kindText
         } else if (value is SqlInt) {
@@ -976,6 +1032,23 @@ The kinds:
         } else {
           kindUnknown
         }
+      }
+
+`holeValue` is a value hole's value, and `nameText` a name's text,
+written or from its hole.
+
+      public holeValue(hole: Int): SqlValue? {
+        if (hole < 0 || hole >= holes.length) { return null; }
+        let part = holes[hole];
+        if (part is QueryParam) { part.value } else { null }
+      }
+
+      public nameText(n: CommonName): String {
+        if (n.hole >= 0 && n.hole < holes.length) {
+          let part = holes[n.hole];
+          if (part is QueryName) { return part.name.name; }
+        }
+        lexer.nameValue(n.token)
       }
 
 Comparisons and arithmetic.
@@ -1175,7 +1248,7 @@ Comparisons and arithmetic.
 
 ### Kinds
 
-      private condition(k: Int, e: CommonExpr): Void throws Bubble {
+      public condition(k: Int, e: CommonExpr): Void throws Bubble {
         if (k == kindInteger || k == kindFloat || k == kindText) {
           fail("${described(k)} where a condition goes", e.at);
         }
@@ -1229,7 +1302,7 @@ and `COALESCE` give, refusing kinds that differ.
         result
       }
 
-      private fail(message: String, at: CommonToken): Void throws Bubble {
+      public fail(message: String, at: CommonToken): Void throws Bubble {
         problem = lexer.located(message, at.line, at.column, at.offset);
         bubble()
       }
@@ -1251,7 +1324,7 @@ unknown and `NULL`.
 
       private known(k: Int): Int { if (k == kindNull) { kindUnknown } else { k } }
 
-      private described(k: Int): String {
+      public described(k: Int): String {
         if (k == kindText) {
           "text"
         } else if (k == kindBoolean) {
@@ -1323,26 +1396,38 @@ otherwise, integers without leading zeros, and only the parentheses
 the grammar needs. With `explicit`, it puts every operand that's an
 operator expression in parentheses, which shows the tree's shape.
 Holes stay holes: the result is a template, its runs of text between
-them.
+them. The [statement printer](common-statements.temper.md) writes
+through it.
 
     class CommonTemplate(public runs: List<String>, public holes: List<Int>) {}
 
-    class CommonPrinter(private lexer: CommonLexer, private explicit: Boolean) {
+    class CommonPrinter(public lexer: CommonLexer, public explicit: Boolean) {
       private runs: ListBuilder<String> = new ListBuilder<String>();
       private holes: ListBuilder<Int> = new ListBuilder<Int>();
       private var out: StringBuilder = new StringBuilder();
 
       public print(e: CommonExpr): CommonTemplate {
         write(e, 0);
+        finish()
+      }
+
+      public printStatement(s: CommonStatement): CommonTemplate {
+        new StatementPrinter(this).statement(s);
+        finish()
+      }
+
+      private finish(): CommonTemplate {
         runs.add(out.toString());
         out = new StringBuilder();
         new CommonTemplate(runs.toList(), holes.toList())
       }
 
+      public text(s: String): Void { out.append(s); }
+
 `write` writes an expression where the grammar needs at least `level`,
 in parentheses if it has less.
 
-      private write(e: CommonExpr, level: Int): Void {
+      public write(e: CommonExpr, level: Int): Void {
         let own = levelOf(e);
         let paren = own < level || (explicit && level > 1 && own < levelPrimary);
         if (paren) { out.append("("); }
@@ -1364,7 +1449,7 @@ in parentheses if it has less.
           name(e.column);
         } else if (e is SubqueryExpr) {
           out.append("(");
-          hole(e.hole);
+          new StatementPrinter(this).select(e.query);
           out.append(")");
         } else if (e is ExistsExpr) {
           out.append("EXISTS ");
@@ -1491,22 +1576,15 @@ in parentheses if it has less.
         }
       }
 
-      private name(n: CommonName): Void {
+      public name(n: CommonName): Void {
         if (n.hole >= 0) {
           hole(n.hole);
           return;
         }
-        let value = lexer.nameValue(n.token);
-        if (isPlainName(value)) {
-          out.append(value);
-        } else {
-          out.append("\"");
-          out.append(replaceCodePoint(value, char'"', "\"\""));
-          out.append("\"");
-        }
+        out.append(canonicalName(lexer.nameValue(n.token)));
       }
 
-      private hole(index: Int): Void {
+      public hole(index: Int): Void {
         runs.add(out.toString());
         out = new StringBuilder();
         holes.add(index);
@@ -1537,17 +1615,22 @@ Precedence: how tightly each kind of expression binds.
         }
       }
 
-Whether a name can be written bare: lowercase, and not a word with a
-meaning.
+    }
 
-      private isPlainName(value: String): Boolean {
-        if (value.isEmpty || isDigit(value[String.begin])) { return false; }
-        for (var i = String.begin; value.hasIndex(i); i = value.next(i)) {
-          let c = value[i];
-          if (!((c >= char'a' && c <= char'z') || isDigit(c) || c == char'_')) { return false; }
-        }
-        !commonWords.has(value)
+`canonicalName` writes a name bare if it can be, lowercase and not a
+word with a meaning, or else quoted.
+
+    let canonicalName(value: String): String {
+      if (isPlainName(value)) { value } else { "\"${replaceCodePoint(value, char'"', "\"\"")}\"" }
+    }
+
+    let isPlainName(value: String): Boolean {
+      if (value.isEmpty || isDigit(value[String.begin])) { return false; }
+      for (var i = String.begin; value.hasIndex(i); i = value.next(i)) {
+        let c = value[i];
+        if (!((c >= char'a' && c <= char'z') || isDigit(c) || c == char'_')) { return false; }
       }
+      !commonWords.has(value)
     }
 
 Precedence levels, from loosest to tightest.

@@ -40,10 +40,14 @@ text; the constructor is private. It keeps its own copy of the parts
 (free when they're already a `List`), so a caller that goes on
 changing its list can't make the parts and `params` disagree.
 
+A common query also keeps its syntax tree, privately, parsed from its
+parts when it's made, since rendering writes from the tree.
+
     export class Query {
       public dialect: Dialect;
       public parts: List<QueryPart>;
       public params: List<SqlValue>;
+      private common: CommonQuery?;
 
       private constructor(dialect: Dialect, parts: Listed<QueryPart>) {
         let own = parts.toList();
@@ -54,9 +58,11 @@ changing its list can't make the parts and `params` disagree.
           let part = own[i];
           if (part is QueryParam) { params.add(part.value); }
         }
+        let common = if (dialect.name == "common") { parsedCommon(own) } else { null };
         this.dialect = dialect;
         this.parts = own;
         this.params = params.toList();
+        this.common = common;
       }
 
 `unchecked` makes a query for a dialect straight from its parts,
@@ -65,7 +71,9 @@ is, so it must never hold untrusted text, and must read as the caller
 means in that dialect. It's for code that checks its own text, such
 as another builder that already lexes SQL. Use a `QueryBuilder` or a
 tag otherwise. It takes any list of parts, even a `ListBuilder` still
-being added to, and the query keeps its own copy.
+being added to, and the query keeps its own copy. For the common
+dialect it parses the parts, without the checks; a query whose parts
+don't parse can't render.
 
 Temper's private constructors still come out public in some backends
 (a known limitation, for now), so there `new Query(dialect, parts)` is
@@ -84,11 +92,33 @@ run together into one token, such as `5-` and `-1` into a comment, or
 line breaks, and the punctuation `(`, `)`, `[`, `]`, `,`, and `;`
 (and `.` beside a quoted name) touch a hole directly.
 
+A common query renders as canonical common SQL, written from its tree:
+keywords in capitals, names bare where they can be and quoted
+otherwise, and comments gone.
+
 Rendering bubbles if `renderProblem` finds a problem: a dialect other
 than the query's, or a named style whose marker is in the text.
 
       public render(dialect: Dialect, style: PlaceholderStyle): RenderedQuery throws Bubble {
         if (renderProblem(dialect, style) != null) { bubble() }
+        let common = this.common;
+        if (common != null) {
+          let written = common.rendered();
+          let values = new ListBuilder<SqlValue>();
+          for (let part of written) {
+            if (part is QueryParam) { values.add(part.value); }
+          }
+          return joined(written, values.toList(), dialect, style);
+        }
+        joined(parts, params, dialect, style)
+      }
+
+      private joined(
+        parts: List<QueryPart>,
+        params: List<SqlValue>,
+        dialect: Dialect,
+        style: PlaceholderStyle,
+      ): RenderedQuery {
         let sb = new StringBuilder();
         var last = -1;
         var count = 0;
@@ -121,8 +151,8 @@ parameter. A query for `mysql` renders for `mysqlNoBackslashEscapes`
 too, and the other way around, since both check templates with the
 same lexer, which refuses text the two modes read differently.
 
-A common query renders, for now, only for `Dialect.common`, as it was
-written; rendering it for each database waits for the parser.
+A common query renders, for now, only for `Dialect.common`; rendering
+it for each database is next.
 
 A named style's marker (`@` or `:`) can't be anywhere in the query's
 text, even inside quotes, since a driver that looks for names could
@@ -135,10 +165,17 @@ misread it.
         if (!sameLexing(this.dialect, dialect)) {
           return "query checked for ${this.dialect.name}, not ${dialect.name}";
         }
+        var written = parts;
+        let common = this.common;
+        if (common != null) {
+          let found = common.problem;
+          if (found != null) { return "common query doesn't parse: ${found}"; }
+          written = common.rendered();
+        }
         let marker = style.marker;
         if (marker != 0) {
-          for (var i = 0; i < parts.length; i += 1) {
-            let part = parts[i];
+          for (var i = 0; i < written.length; i += 1) {
+            let part = written[i];
             if (part is QueryText && hasCodePoint(part.text, marker)) {
               let shown = if (marker == char'@') { "@" } else { ":" };
               return "text has ${shown}, which ${style.name} uses";
@@ -249,6 +286,13 @@ before they're checked. A mistake makes `build` bubble, with
 `templateProblem` saying why (and, for the common dialect, where); for
 a tag, it panics.
 
+For the common dialect, `build` also parses the whole template and
+checks it for each target database: every profile by default, or
+fewer, set with `targets` any time before `build`. A nested common
+query's own text is lexed, parsed, and checked again, as part of the
+template, so the checks see into it, and it needs to suit only the
+outer query's targets.
+
 ```temper inert
 let b = new QueryBuilder(Dialect.mysql);
 b.appendSafe("SELECT * FROM ");
@@ -261,18 +305,51 @@ let q = b.build() orelse panic();
     export class QueryBuilder {
       private dialect: Dialect;
       private lexer: SqlLexer;
+      // The same lexer, for the common dialect, or else null.
+      private common: CommonLexer?;
       private parts: ListBuilder<QueryPart>;
+      // For the common dialect, the parts that are value and name
+      // holes, in order, nested queries' too.
+      private holes: ListBuilder<QueryPart>;
+      private var targetList: List<Dialect>;
       private var pending: StringBuilder;
       private var hasPending: Boolean;
       private var problem: String?;
 
       public constructor(dialect: Dialect) {
+        let lexer = newLexer(dialect);
         this.dialect = dialect;
-        this.lexer = newLexer(dialect);
+        this.lexer = lexer;
+        this.common = if (lexer is CommonLexer) { lexer } else { null };
         this.parts = new ListBuilder<QueryPart>();
+        this.holes = new ListBuilder<QueryPart>();
+        this.targetList = commonTargets();
         this.pending = new StringBuilder();
         this.hasPending = false;
         this.problem = null;
+      }
+
+`targets` are the databases a common query must mean the same on. Set
+fewer to relax the checks for the ones left out: `\` in strings, say,
+which MySQL's default profile reads as an escape, is fine for
+`[Dialect.postgres, Dialect.sqlite]`. Only common builders take them.
+
+      public get targets(): List<Dialect> { targetList }
+
+      public set targets(value: List<Dialect>): Void {
+        if (common == null) {
+          fail("targets are only for common queries");
+        } else if (value.isEmpty) {
+          fail("no target databases");
+        } else {
+          for (var i = 0; i < value.length; i += 1) {
+            if (value[i].name == "common") {
+              fail("common isn't a target database");
+              return;
+            }
+          }
+          targetList = value;
+        }
       }
 
       public appendSafe(fixed: String): Void {
@@ -296,12 +373,12 @@ let q = b.build() orelse panic();
 
       @overload("append")
       public appendValue(x: SqlValue): Void {
-        if (hole(holeValue)) { parts.add(new QueryParam(x)); }
+        if (hole(holeValue)) { added(new QueryParam(x)); }
       }
 
       @overload("append")
       public appendIdentifier(x: Identifier): Void {
-        if (hole(holeName)) { parts.add(new QueryName(x)); }
+        if (hole(holeName)) { added(new QueryName(x)); }
       }
 
       @overload("append")
@@ -310,9 +387,46 @@ let q = b.build() orelse panic();
         if (!sameLexing(x.dialect, dialect)) {
           fail(lexer.locate("nested query checked for ${x.dialect.name}, not ${dialect.name}"));
         }
-        if (hole(holeQuery)) {
+        let common = this.common;
+        if (common != null) {
+          nest(common, x);
+        } else if (hole(holeQuery)) {
           for (let p of x.parts) { parts.add(p); }
         }
+      }
+
+A nested common query's parts go through the lexer too, between its
+start and end.
+
+      private nest(common: CommonLexer, x: Query): Void {
+        if (!common.inCode) {
+          fail(common.locate("hole inside a quote or comment"));
+          return;
+        }
+        if (x.dialect.name != "common") { return; }
+        common.beginQuery();
+        for (let p of x.parts) {
+          if (p is QueryText) {
+            let found = common.scan(p.text);
+            if (found != null) { fail(found); }
+          } else if (p is QueryParam) {
+            let found = common.hole(holeValue);
+            if (found != null) { fail(found); }
+            holes.add(p);
+          } else if (p is QueryName) {
+            let found = common.hole(holeName);
+            if (found != null) { fail(found); }
+            holes.add(p);
+          }
+          parts.add(p);
+        }
+        let found = common.endQuery();
+        if (found != null) { fail(found); }
+      }
+
+      private added(part: QueryPart): Void {
+        parts.add(part);
+        if (common != null) { holes.add(part); }
       }
 
       public build(): Query throws Bubble {
@@ -323,6 +437,13 @@ let q = b.build() orelse panic();
         }
         let ended = lexer.endProblem();
         if (ended != null) { fail(ended); }
+        let common = this.common;
+        if (common != null) {
+          if (problem == null) {
+            let found = commonProblem(common, holes.toList(), targetList);
+            if (found != null) { fail(found); }
+          }
+        }
         if (problem != null) { bubble() }
         Query.unchecked(dialect, parts)
       }

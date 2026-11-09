@@ -45,12 +45,13 @@ excerpt the lexer gives: up to 20 code points on each side.
     }
 
 `expr` is a tag that parses and checks its template as an expression,
-and gives it printed canonically, with `?` for each value, `{name}`
-for each name, and `{q}` for each nested query, or the problem.
+and gives it printed canonically, with `?` for each value and `{name}`
+for each name, or the problem. A nested query goes in as its own
+tokens, as the builder puts it.
 
     class ExprTag {
       private lexer: CommonLexer = new CommonLexer();
-      private values: ListBuilder<SqlValue?> = new ListBuilder<SqlValue?>();
+      private holes: ListBuilder<QueryPart> = new ListBuilder<QueryPart>();
       private shown: ListBuilder<String> = new ListBuilder<String>();
       private var problem: String? = null;
 
@@ -66,11 +67,18 @@ for each name, and `{q}` for each nested query, or the problem.
       @overload("append")
       public appendBoolean(x: Boolean): Void { appendValue(new SqlBool(x)); }
       @overload("append")
-      public appendValue(x: SqlValue): Void { hole(holeValue, x, "?"); }
+      public appendValue(x: SqlValue): Void { hole(new QueryParam(x)); }
       @overload("append")
-      public appendIdentifier(x: Identifier): Void { hole(holeName, null, "{${x.name}}"); }
+      public appendIdentifier(x: Identifier): Void { hole(new QueryName(x)); }
       @overload("append")
-      public appendQuery(x: Query): Void { hole(holeQuery, null, "{q}"); }
+      public appendQuery(x: Query): Void {
+        inCode();
+        lexer.beginQuery();
+        for (let p of x.parts) {
+          if (p is QueryText) { note(lexer.scan(p.text)); } else { hole(p); }
+        }
+        note(lexer.endQuery());
+      }
 
       public get accumulated(): String {
         if (problem == null && lexer.inLineComment) { note(lexer.scan("\n")); }
@@ -85,7 +93,7 @@ for each name, and `{q}` for each nested query, or the problem.
 `printed` checks a tree and prints it, or gives the problem.
 
       private printed(tree: CommonExpr): String {
-        let checker = new CommonChecker(lexer, values.toList());
+        let checker = new CommonChecker(lexer, holes.toList(), commonTargets());
         let kind = checker.check(tree) orelse -1;
         if (kind < 0) { return checker.problem ?? "fails"; }
         let printed = new CommonPrinter(lexer, false).print(tree);
@@ -97,11 +105,20 @@ for each name, and `{q}` for each nested query, or the problem.
         out.toString()
       }
 
-      private hole(kind: Int, value: SqlValue?, show: String): Void {
+      private hole(part: QueryPart): Void {
+        inCode();
+        if (part is QueryName) {
+          note(lexer.hole(holeName));
+          shown.add("{${part.name.name}}");
+        } else {
+          note(lexer.hole(holeValue));
+          shown.add("?");
+        }
+        holes.add(part);
+      }
+
+      private inCode(): Void {
         if (problem == null && !lexer.inCode) { problem = lexer.locate("hole inside a quote or comment"); }
-        note(lexer.hole(kind));
-        values.add(value);
-        shown.add(show);
       }
 
       private note(found: String?): Void {
@@ -265,7 +282,7 @@ take set numbers of arguments.
         new Pair("t.select", new Pair("expected a name", 3)),
         new Pair("t.", new Pair("expected a name", 3)),
         new Pair("Count = 1", new Pair("bare name not lowercase; quote it to keep its case", 1)),
-        new Pair("select", new Pair("expected an expression", 1)),
+        new Pair("select", new Pair("a subquery needs its own parentheses", 1)),
         new Pair("(a, b) = (1, 2)", new Pair("expected )", 3)),
         new Pair("exists a", new Pair("expected (", 8)),
       ];
@@ -389,7 +406,8 @@ patterns, and kinds that every database reads alike.
 
 Values go wherever an expression does, names only in a column, and
 nested queries only in their own parentheses, with `IN`, or after
-`EXISTS`. The checks see each value's kind.
+`EXISTS`, where they go in as written. The checks see each value's
+kind.
 
     test("common expression holes") {
       let t = named("t");
@@ -400,8 +418,8 @@ nested queries only in their own parentheses, with `IN`, or after
       assert(expr"${t}.${c} = ${"x"} AND ${c} IS NULL" == "{t}.{c} = ? AND {c} IS NULL");
       assert(expr"t.${c} || ${1}" == "t.{c} || ?");
       assert(expr"a IN (${q}) AND EXISTS (${q}) AND (${q}) > 1" ==
-        "a IN ({q}) AND EXISTS ({q}) AND ({q}) > 1");
-      assert(expr"a NOT IN ((${q}), ${1})" == "a NOT IN (({q}), ?)");
+        "a IN (SELECT 1) AND EXISTS (SELECT 1) AND (SELECT 1) > 1");
+      assert(expr"a NOT IN ((${q}), ${1})" == "a NOT IN ((SELECT 1), ?)");
       assert(expr"${1} + ${t}.${c} * ${2}" == "? + {t}.{c} * ?");
       assert(expr"${t}.${c} / ${1.5}" == "{t}.{c} / ?");
       assert(expr"${t}.${c} / ${2}" ==
@@ -419,7 +437,7 @@ nested queries only in their own parentheses, with `IN`, or after
       assert(expr"a LIKE ${"x"} ESCAPE ${"!"}" ==
         at("expected a string after ESCAPE", 1, 20, "a LIKE ${holeMark} ESCAPE ${holeMark}"));
       assert(expr"a IS ${1}" == at("expected NULL", 1, 6, "a IS ${holeMark}"));
-      assert(expr"EXISTS (${1})" == at("expected a nested query", 1, 9, "EXISTS (${holeMark})"));
+      assert(expr"EXISTS (${1})" == at("expected SELECT or a nested query", 1, 9, "EXISTS (${holeMark})"));
       assert(expr"a = ${t}" == "a = {t}");
     }
 

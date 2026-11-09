@@ -5,11 +5,13 @@ every rule it refuses, and where it says the problem is.
 
 ## Test helpers
 
-`lexed` checks text as a common template, and says `ok` or what's
+`lexed` lexes text as a common template, without parsing it, and
+checks its strings and names for every target, and says `ok` or what's
 wrong with it; `at` writes a problem with its place.
 
     let lexed(text: String): String {
-      checkTemplate(Dialect.common) { b => b.appendSafe(text); }
+      let lexer = new CommonLexer();
+      lexer.scan(text) ?? lexer.endProblem() ?? lexer.targetProblem(commonTargets()) ?? "ok"
     }
 
     let at(message: String, line: Int, column: Int, excerpt: String): String {
@@ -78,8 +80,8 @@ names `Identifier` takes.
 ## The tag
 
 A common query keeps its values as parameters, and renders for
-`Dialect.common` as written, with names quoted the shared core's way.
-Rendering for each database waits for the parser.
+`Dialect.common` canonically, with names bare where they can be.
+Rendering for each database comes next.
 
     test("the sql tag") {
       let users = Identifier.named("users") orelse panic();
@@ -89,9 +91,9 @@ Rendering for each database waits for the parser.
       assert(q.params.length == 2);
       assert(paramText(q.params[0]) == "text:${name}");
       assert(render(q, Dialect.common, PlaceholderStyle.question) ==
-        "SELECT id FROM \"users\" WHERE name = ? AND age > ?");
+        "SELECT id FROM users WHERE name = ? AND age > ?");
       assert(render(q, Dialect.common, PlaceholderStyle.dollarNumbered) ==
-        "SELECT id FROM \"users\" WHERE name = $1 AND age > $2");
+        "SELECT id FROM users WHERE name = $1 AND age > $2");
       for (let d of allDialects()) {
         assert(render(q, d, PlaceholderStyle.question) == "(fails)");
         assert(q.renderProblem(d, PlaceholderStyle.question) ==
@@ -284,9 +286,9 @@ zeros aside; nothing runs into a number.
 
 ## Holes
 
-Holes count as `${…}` in positions. A nested query goes alone in
-parentheses, only a name goes next to `.` or after a word that takes
-a name, and only a value after `LIMIT` or `OFFSET`.
+Holes count as `${…}` in positions. The grammar decides where each
+kind goes: a nested query alone in parentheses, a name where a name
+goes, and only a value after `LIMIT` or `OFFSET`.
 
     test("common holes") {
       let a = Identifier.named("a") orelse panic();
@@ -320,23 +322,24 @@ a name, and only a value after `LIMIT` or `OFFSET`.
         b.appendSafe(".a");
       };
       assert(beforeDot == at("value where a name goes", 1, 8, "SELECT ${holeMark}.a"));
-      // Each word, and the hole's column after it.
-      let words = [
-        new Pair("AS", 13), new Pair("FROM", 15), new Pair("JOIN", 15), new Pair("INTO", 15),
-        new Pair("UPDATE", 17), new Pair("SET", 14), new Pair("as", 13),
+      // Each place a name goes, and the hole's column there.
+      let places = [
+        new Pair("SELECT a AS ", 13), new Pair("SELECT a FROM ", 15), new Pair("SELECT a FROM t JOIN ", 22),
+        new Pair("INSERT INTO ", 13), new Pair("UPDATE ", 8), new Pair("UPDATE t SET ", 14),
+        new Pair("DELETE FROM ", 13), new Pair("select a as ", 13),
       ];
-      for (let w of words) {
+      for (let w of places) {
         let got = checkTemplate(Dialect.common) { b =>
-          b.appendSafe("SELECT a ${w.key} ");
+          b.appendSafe(w.key);
           b.appendString("t");
         };
-        assert(got == at("value where a name goes", 1, w.value, "SELECT a ${w.key} ${holeMark}"));
+        assert(got == placed("${w.key}${holeMark}", "value where a name goes", w.value)) { got }
       }
       let named = checkTemplate(Dialect.common) { b =>
-        b.appendSafe("SELECT a LIMIT ");
+        b.appendSafe("SELECT a FROM t LIMIT ");
         b.appendIdentifier(a);
       };
-      assert(named == at("name where a value goes", 1, 16, "SELECT a LIMIT ${holeMark}"));
+      assert(named == placed("SELECT a FROM t LIMIT ${holeMark}", "name where a value goes", 23));
     }
 
 A nested common query goes in parentheses, alone, as a subquery, and
@@ -353,18 +356,18 @@ now.
         b.appendSafe("SELECT ");
         b.appendQuery(inner);
       };
-      assert(bare == at("nested query outside parentheses", 1, 8, "SELECT ${holeMark}"));
+      assert(bare == at("nested query needs its own parentheses", 1, 8, "SELECT ${holeMark}"));
       let followed = checkTemplate(Dialect.common) { b =>
         b.appendSafe("SELECT (");
         b.appendQuery(inner);
         b.appendSafe(" + 1)");
       };
-      assert(followed == at("nested query outside parentheses", 1, 9, "SELECT (${holeMark} + 1)"));
+      assert(followed == at("nested query needs its own parentheses", 1, 9, "SELECT (${holeMark} + 1)"));
       let open = checkTemplate(Dialect.common) { b =>
         b.appendSafe("SELECT (");
         b.appendQuery(inner);
       };
-      assert(open == at("nested query outside parentheses", 1, 9, "SELECT (${holeMark}"));
+      assert(open == at("nested query needs its own parentheses", 1, 9, "SELECT (${holeMark}"));
       let pg = postgres"SELECT 1";
       let foreign = checkTemplate(Dialect.common) { b =>
         b.appendSafe("SELECT (");

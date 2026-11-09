@@ -9,9 +9,9 @@ the pieces a safe-composition framework, a query builder, or an admin
 tool needs: quoting and templates for each database, done right.
 
 The common dialect is [designed below](#the-common-dialect), and being
-built: its tag, lexer, and expressions are done, and statements, the
-rest of the checks, and rendering are next. Quoting and per-database
-templates are done.
+built: its tag, lexer, expressions, and statements are done, and
+rendering for each database and the rest of the checks are next.
+Quoting and per-database templates are done.
 
 ## Goals
 
@@ -198,18 +198,18 @@ Done:
   executable comments, quotes in MySQL optimizer hints (`/*+ … */`),
   text that puts DuckDB's Unicode space pass out of step, and NUL
   anywhere in the text. Each dialect's file lists its rules.
-- The common dialect's first piece: `Dialect.common`, a profile that
-  quotes as the shared core does and takes only names `Identifier`
-  takes; and the `sql` tag (`SqlTag`), whose queries have that
-  dialect. Its lexer reads the template into tokens and refuses
-  anything outside the subset's lexical rules (below), with the line,
-  column, and an excerpt; holes are tokens of their kind, checked
-  only as far as the tokens beside them show. Common queries nest in
-  common templates, in parentheses, and render only for
-  `Dialect.common`, as written, until the parser lands.
+- The common dialect, so far: `Dialect.common`, a profile that quotes
+  as the shared core does and takes only names `Identifier` takes; and
+  the `sql` tag (`SqlTag`), whose queries have that dialect. The tag
+  and `QueryBuilder` lex, parse, and check the whole statement (below),
+  refusing anything outside the subset or read differently by a target
+  database, with the line, column, and an excerpt. A builder can
+  narrow its `targets`. Common queries nest in common templates where
+  a subquery goes, and render only for `Dialect.common`, canonically,
+  until rendering for each database lands.
 
-Next: the rest of the [common dialect](#the-common-dialect): the
-parser, the check stage, and rendering for each database.
+Next: the rest of the [common dialect](#the-common-dialect): rendering
+for each database, and the rest of the check stage.
 
 Also planned:
 
@@ -224,8 +224,8 @@ Also planned:
 ## The common dialect
 
 Status: designed (2026-11-07), with its open questions decided
-(2026-11-09, under [Decided](#decided)). Built: chunks 1 and 2 of the
-[plan](#plan), the lexer and tag, and expressions.
+(2026-11-09, under [Decided](#decided)). Built: chunks 1 to 3 of the
+[plan](#plan): the lexer and tag, expressions, and statements.
 
 One query, written once, rendered for each database:
 
@@ -261,7 +261,7 @@ Statements, one per query, with no `;`:
 
 - `SELECT [DISTINCT]` columns (`*`, `t.*`, expressions with `AS`
   aliases), `FROM` a table or a subquery with an alias, joined by
-  `[INNER] JOIN`, `LEFT [OUTER] JOIN` (with `ON` or `USING`), or
+  `[INNER] JOIN` or `LEFT [OUTER] JOIN` with `ON` (`USING` later), or
   `CROSS JOIN`; `WHERE`, `GROUP BY` and `HAVING`, `ORDER BY` with
   `ASC`, `DESC`, and `NULLS FIRST` or `NULLS LAST`, and `LIMIT` and
   `OFFSET`.
@@ -312,26 +312,28 @@ common query renders for every profile:
   placeholder styles work unchanged. `render(Dialect.common, style)`
   writes canonical common SQL, for logs and tests. `renderProblem`
   gives the check's message.
-- **Targets.** A query records the dialects it was checked for:
-  every profile by default, or fewer, set on a builder with
-  `targets`. Rendering for another dialect checks again, and bubbles
-  on a problem.
+- **Targets.** A builder checks for every profile by default, or
+  fewer, set with `targets` (built). A query will record the dialects
+  it was checked for, with rendering per database; rendering for
+  another dialect checks again, and bubbles on a problem.
 - **Builder.** `new QueryBuilder(Dialect.common)` takes the same
   `appendSafe` and `append` calls, and `build` parses and checks,
   bubbling with `templateProblem`; the tag panics, as other tags do.
 - **Holes by kind.** A value (`String`, `Int`, `SqlValue`, …) goes
   only where the grammar takes an expression or a `LIMIT` count; an
   `Identifier` only where it takes a name (a table, a column, an
-  alias, or one part of `${schema}.${table}`); and a common `Query`
-  only where it takes a subquery, as in `IN (${q})`, `EXISTS (${q})`,
-  or `FROM (${q}) AS t`. Anything else is a template mistake: a
-  `String` can never become a name.
-- **Nesting.** Common queries nest in common templates, if the outer
-  query's targets are among the inner one's. A common query nested in
-  a database's template (`postgres"… ${q}"`) is rendered for that
-  database and goes in as parts: an escape hatch for features outside
-  the subset. A database's query can't nest in a common template,
-  since it has no tree.
+  alias, or one part of `${schema}.${table}`); and a common `Query`,
+  which must be a `SELECT`, only where it takes a subquery, as in
+  `IN (${q})`, `EXISTS (${q})`, `FROM (${q}) AS t`, or after
+  `INSERT INTO t (a)`. Anything else is a template mistake: a `String`
+  can never become a name.
+- **Nesting.** A common query nested in a common template goes in as
+  its own tokens, so the outer query's checks see into it and check it
+  again for the outer query's targets; problems there are placed at
+  its hole. A common query nested in a database's template
+  (`postgres"… ${q}"`) will be rendered for that database and go in as
+  parts: an escape hatch for features outside the subset. A database's
+  query can't nest in a common template, since it has no tree.
 
 ### The parser
 
@@ -341,19 +343,18 @@ recursive-descent parser builds the tree. The grammar, roughly
 (keywords are case-insensitive):
 
 ```
-statement = select | insert | update | delete
+statement = select | insert | update | delete | QUERY_HOLE
 select    = "SELECT" ["DISTINCT"] item {"," item} ["FROM" source {join}]
             ["WHERE" expr] ["GROUP" "BY" exprs ["HAVING" expr]]
             ["ORDER" "BY" order {"," order}] ["LIMIT" count] ["OFFSET" count]
-item      = "*" | name "." "*" | expr ["AS" name]
+item      = "*" | name "." "*" | expr [["AS"] name]
 source    = qname [["AS"] name] | subquery ["AS"] name
-join      = ["INNER" | "LEFT" ["OUTER"]] "JOIN" source
-              ("ON" expr | "USING" "(" names ")")
+join      = ["INNER" | "LEFT" ["OUTER"]] "JOIN" source "ON" expr
           | "CROSS" "JOIN" source
 order     = expr ["ASC" | "DESC"] ["NULLS" ("FIRST" | "LAST")]
 count     = INTEGER | VALUE_HOLE
 insert    = "INSERT" "INTO" qname "(" names ")"
-            ("VALUES" row {"," row} | select)
+            ("VALUES" row {"," row} | select | QUERY_HOLE)
 update    = "UPDATE" qname "SET" name "=" expr {"," name "=" expr} ["WHERE" expr]
 delete    = "DELETE" "FROM" qname ["WHERE" expr]
 
@@ -389,6 +390,17 @@ names have at most two parts (DuckDB can read a third as a field),
 others' a set of characters), `DISTINCT` goes only in aggregates, and
 a nested query goes only in its own parentheses. A printer writes the
 tree back as canonical common SQL, with only the parentheses needed.
+
+Statements (built; `src/common-statements.temper.md`) parse to the
+same kind of tree, with subqueries written in place or as holes. The
+parser refuses `HAVING` without `GROUP BY` (SQLite before 3.39), every
+clause after the items without `FROM` (MySQL and MariaDB versions
+differ), comma joins (MySQL groups them differently beside `JOIN`), a
+subquery in `FROM` without an alias, a parenthesized query after
+`INSERT` (SQLite), `VALUES` rows of the wrong length, and `SET t.c`
+(PostgreSQL reads a field). Aliases may skip `AS`, since rendering
+always writes it. Words for later constructs (`UNION`, `WITH`,
+`RIGHT JOIN`, `USING`, …) say so.
 
 Lexing rules (built; `src/common.temper.md` has the details): ASCII
 whitespace (not vertical tab, which SQLite refuses); `--` comments to
@@ -474,7 +486,22 @@ arithmetic, numbers or text as conditions, comparing different kinds,
 casts of booleans, of floats to `INTEGER` or `TEXT`, and of strings
 that aren't plain numbers to `INTEGER` or `DOUBLE`.
 
-Narrower targets relax only the checks for the dialects left out.
+Built for statements: conditions in `WHERE`, `HAVING`, and `ON`;
+`LIMIT` and `OFFSET` values that aren't non-negative integers;
+constants in `GROUP BY` and `ORDER BY` other than a column's place;
+columns neither grouped nor aggregated in a grouped query (SQLite
+takes any row's); `SELECT` aliases where databases could read a
+column instead (outside `ORDER BY`, inside its expressions, or
+matching only without regard to case); `SELECT DISTINCT` ordered by
+something not selected; a table twice in `FROM`; a column twice in
+`INSERT` or `SET`; and `ON` reading a table joined after it. For MySQL
+targets also: the `UPDATE … SET` trap, a subquery reading the table an
+`UPDATE`, `DELETE`, or `INSERT … VALUES` changes, `LIMIT` in an `IN`
+subquery, and `*` beside other items.
+
+Narrower targets relax only the checks for the dialects left out: so
+far the lexer's string and name checks and the MySQL statement checks;
+the expression checks still apply to every target.
 The default set is every profile now; a new database (SQL Server,
 say) joins it only in a major version, so an upgrade can't make
 working queries fail.
@@ -583,8 +610,10 @@ Each chunk is one commit, tested on every backend:
 2. **Expressions** (done, 2026-11-09): the tree, the expression
    parser, the canonical printer, the depth limit, and the checks an
    expression alone can show.
-3. **Statements** (medium, ~600): `SELECT`, `INSERT`, `UPDATE`, and
-   `DELETE`, subqueries, nesting, and builder targets.
+3. **Statements** (done, 2026-11-09): `SELECT`, `INSERT`, `UPDATE`,
+   and `DELETE`, subqueries in place or as holes, nesting, builder
+   targets, and the checks a statement shows. The tag parses and
+   checks at construction, and common queries render canonically.
 4. **Rendering** (medium to large, ~800): every profile, with the
    table above, and the per-database lexer oracle.
 5. **Check stage** (medium, ~500): every rule above, at construction
@@ -835,8 +864,8 @@ closest to standard SQL.
 5. **`LIKE` without `ESCAPE`:** only for literal patterns with no `\`.
 6. **`\` in string literals:** refused for the default `mysql` profile,
    with a hint to bind the value; `mysqlNoBackslashEscapes` takes them.
-   Every profile is a target by default, so for now the lexer refuses
-   them in every common template.
+   The lexer refuses them when `mysql` is a target, as it is by
+   default.
 7. **Expression fragments** (`sql"active AND age > ${n}"`): yes, right
    after statements.
 8. **PostgreSQL parameter types:** casts only where a parameter's type
@@ -851,7 +880,7 @@ closest to standard SQL.
     project still supports, MySQL 8.0.17, MariaDB 10.6, and DuckDB
     1.0, each tested on current releases. MySQL 8.0 and MariaDB 10.6
     are past their end of life, but staying compatible costs little.
-12. **Rendering before the parser:** a common query renders only for
-    `Dialect.common`, as written, and `render` bubbles for every
-    database ("isn't built yet") until the renderer lands, rather than
-    passing text through where it happens to be exact.
+12. **Rendering before the renderer:** a common query renders only for
+    `Dialect.common`, canonically from its tree, and `render` bubbles
+    for every database ("isn't built yet") until the renderer lands,
+    rather than passing text through where it happens to be exact.
