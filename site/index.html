@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wherewith: safe SQL, written once, for every language</title>
-  <meta name="description" content="SQL written once in Temper, safe in C++, C#, Java, JavaScript, Lua, Python, and Rust: values bound as parameters, names quoted for SQLite, PostgreSQL, MySQL and MariaDB, and DuckDB.">
+  <title>Wherewith: SQL written once, for every database and language</title>
+  <meta name="description" content="Write SQL once, in a common dialect, and run it on SQLite, PostgreSQL, MySQL and MariaDB, and DuckDB, from C++, C#, Java, JavaScript, Lua, Python, and Rust, with values always bound as parameters.">
   <link rel="stylesheet" href="style.css">
   <script type="module" src="app.js"></script>
   <!-- Without script, every language's code shows, one after another. -->
@@ -31,15 +31,15 @@
         <strong>Muscle memory for AI.</strong>
         <span>Solve it once in Temper, and every language remembers.</span>
       </p>
-      <h1 id="title">Safe SQL, written once, for every language.</h1>
+      <h1 id="title">SQL written once, for every database and language.</h1>
       <p class="lead">
-        Wherewith is SQL written once in
-        <a href="https://temperlang.dev/">Temper</a>, and safe in C++, C#,
-        Java, JavaScript, Lua, Python, and Rust: values become placeholders,
-        and names are quoted the way each database reads them.
+        Write a query once, in Wherewith&#8217;s common dialect, and run it on
+        SQLite, PostgreSQL, MySQL and MariaDB, and DuckDB, from C++, C#,
+        Java, JavaScript, Lua, Python, and Rust. Wherewith checks that it
+        means the same on each, and writes it the way each one needs.
       </p>
 <!--HERO-->
-      <p class="punch">The hostile name never becomes SQL. The driver gets it as a parameter.</p>
+      <p class="punch">One query, four databases. Values never become SQL: the driver binds them.</p>
     </div>
   </section>
 
@@ -49,8 +49,10 @@
         <h2 id="differ-title">Where dialects differ</h2>
         <p>
           The same SQL text can read differently from one database to the
-          next. Three places it matters, with examples from Wherewith's
-          tests:
+          next. The common dialect handles these for you, and each
+          database&#8217;s own template, for SQL outside it, checks them with
+          that database&#8217;s rules. Three places it matters, with examples
+          from Wherewith's tests:
         </p>
         <div class="cards">
           <article class="card" aria-labelledby="card-backslashes">
@@ -71,7 +73,8 @@
               <strong>Wherewith</strong> escapes backslashes only in the
               <code>mysql</code> profile, and refuses a MySQL template
               whose strings the two modes would end in different places.
-              Values stay parameters.
+              A common query refuses <code>\</code> in its strings while
+              MySQL is a target: bind that text as a value instead.
             </p>
 <!--CARD_BACKSLASHES-->
           </article>
@@ -88,8 +91,8 @@
             </p>
             <p>
               <strong>Wherewith</strong> refuses such names up front, for
-              each profile. An <code>Identifier</code>, which can go in any
-              query, must suit them all.
+              each profile. An <code>Identifier</code>, and every name in a
+              common query, must suit them all.
             </p>
 <!--CARD_NAMES-->
           </article>
@@ -108,8 +111,8 @@
             <p>
               <strong>Wherewith</strong> reads each template the way its
               database does, and refuses a hole that would land in a
-              comment. A query renders only for the database whose rules
-              checked it.
+              comment. A common query refuses <code>/*</code> inside a
+              comment, and never writes comments out.
             </p>
 <!--CARD_COMMENTS-->
           </article>
@@ -121,10 +124,10 @@
       <div class="wrap">
         <h2 id="languages-title">One query, seven languages</h2>
         <p>
-          In Temper, each database's query is a tagged template, checked
-          with that database's rules. Every language gets the same
-          library, built from it, and builds the same queries with a
-          <code>QueryBuilder</code>:
+          In Temper, a common query is an <code>sql</code> template,
+          checked for every database when it runs. Every language gets the
+          same library, built from it, and builds the same query with a
+          <code>QueryBuilder</code> for <code>Dialect.common</code>:
         </p>
 <!--TEMPER-->
         <div class="tabs" role="tablist" aria-label="Language">
@@ -147,6 +150,12 @@
         <h2 id="why-title">Why Wherewith</h2>
         <ul class="reasons">
           <li>
+            <strong>Written once, for every database.</strong>
+            The common dialect is SQL each database reads the same way.
+            What would differ is written the way each one needs, or
+            refused, with its line and column, when the query is built.
+          </li>
+          <li>
             <strong>Values become placeholders.</strong>
             A template's values go to the driver as parameters, with their
             types, so a value never becomes SQL, whatever it holds.
@@ -165,17 +174,19 @@
             Wherewith says what's wrong instead of building the query.
           </li>
           <li>
-            <strong>Four databases, each read its own way.</strong>
-            Queries for SQLite, PostgreSQL, MySQL and MariaDB, and DuckDB
-            are each checked with their database's rules, and render with
-            whichever placeholder style the driver takes: <!--STYLES-->.
+            <strong>Each database&#8217;s own SQL, too.</strong>
+            For SQL outside the common dialect, templates for SQLite,
+            PostgreSQL, MySQL and MariaDB, and DuckDB check it with that
+            database's rules. Every query renders with whichever
+            placeholder style the driver takes: <!--STYLES-->.
           </li>
           <li>
             <strong>Tested against real engines.</strong>
             Its tests run in all seven languages, and round trips run hostile
             input and random templates through SQLite, DuckDB,
             PostgreSQL 18, and MariaDB 11.8, checking that quoted strings
-            and names read back exactly, and bound values come back equal.
+            and names read back exactly, bound values come back equal, and
+            common queries give the same rows on each.
           </li>
         </ul>
       </div>
@@ -198,9 +209,8 @@
         <h2 id="tour-title">The tour is coming</h2>
         <p>
           A tour of the whole API, in every language, comes once the
-          statement model for <code>SELECT</code>, <code>INSERT</code>,
-          <code>UPDATE</code>, and <code>DELETE</code> lands, since the API
-          is still moving. Until then, the
+          common dialect&#8217;s checks are complete, since the API is still
+          moving. Until then, the
           <a href="https://github.com/temperlang/wherewith#readme">README</a>
           and the
           <a href="https://github.com/temperlang/wherewith/blob/main/docs/design.md">design notes</a>

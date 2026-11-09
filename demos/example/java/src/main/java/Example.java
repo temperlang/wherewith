@@ -5,39 +5,37 @@
 
 // snippet: example
 import wherewith.Dialect;
-import wherewith.Identifier;
 import wherewith.PlaceholderStyle;
+import wherewith.Query;
 import wherewith.QueryBuilder;
 import wherewith.RenderedQuery;
 
 public class Example {
-    // The query for one database, checked with its rules, rendered for it.
-    static RenderedQuery find(String name, Dialect dialect, PlaceholderStyle style) {
-        QueryBuilder b = new QueryBuilder(dialect);
-        b.appendSafe("SELECT id FROM ");
-        b.appendIdentifier(Identifier.named("students"));
-        b.appendSafe(" WHERE name = ");
-        b.appendString(name);
-        return b.build().render(dialect, style);
-    }
-
     public static void main(String[] args) {
-        String name = "Robert'); DROP TABLE students; --";
+        String word = "Launch";
 
-        // Each database's quoting, with the placeholders its driver takes.
-        System.out.println("sqlite: " + find(name, Dialect.sqlite, PlaceholderStyle.question).getSql());
-        System.out.println("postgres: " + find(name, Dialect.postgres, PlaceholderStyle.dollarNumbered).getSql());
-        System.out.println("mysql: " + find(name, Dialect.mysql, PlaceholderStyle.percentS).getSql());
-        RenderedQuery r = find(name, Dialect.duckdb, PlaceholderStyle.dollarNumbered);
+        // One query, in the common dialect, checked for every database.
+        QueryBuilder b = new QueryBuilder(Dialect.common);
+        b.appendSafe("SELECT title, \"dueDate\" FROM tasks WHERE title LIKE ");
+        b.appendString(word);
+        b.appendSafe(" || '%' ESCAPE '!' ORDER BY \"dueDate\" NULLS LAST LIMIT ");
+        b.appendInt(20);
+        b.appendSafe(" OFFSET ");
+        b.appendInt(40);
+        Query q = b.build();
+
+        // Rendered for each database, with the placeholders its driver takes.
+        System.out.println("sqlite: " + q.render(Dialect.sqlite, PlaceholderStyle.question).getSql());
+        System.out.println("postgres: " + q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered).getSql());
+        System.out.println("mysql: " + q.render(Dialect.mysql, PlaceholderStyle.percentS).getSql());
+        RenderedQuery r = q.render(Dialect.duckdb, PlaceholderStyle.dollarNumbered);
         System.out.println("duckdb: " + r.getSql());
-        // The name travels apart from the SQL, for the driver to bind.
+        // The values travel apart from the SQL, for the driver to bind.
         System.out.println("params: " + r.getParams().size());
 
-        // A value inside quotes is refused, not guessed at.
-        QueryBuilder bad = new QueryBuilder(Dialect.postgres);
-        bad.appendSafe("SELECT id FROM students WHERE name = '");
-        bad.appendString(name);
-        bad.appendSafe("'");
+        // What databases would read differently is refused, with its place.
+        QueryBuilder bad = new QueryBuilder(Dialect.common);
+        bad.appendSafe("SELECT title, dueDate FROM tasks");
         System.out.println("refused: " + bad.getTemplateProblem()); // and bad.build() throws
     }
 }

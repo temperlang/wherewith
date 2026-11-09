@@ -4,33 +4,31 @@
 // print the same text. See demos/README.md for how to run them.
 
 // snippet: example
-import { Dialect, Identifier, PlaceholderStyle, QueryBuilder } from "wherewith";
+import { Dialect, PlaceholderStyle, QueryBuilder } from "wherewith";
 
-const name = "Robert'); DROP TABLE students; --";
+const word = "Launch";
 
-// The query for one database, checked with its rules, rendered for it.
-function find(dialect, style) {
-  const b = new QueryBuilder(dialect);
-  b.appendSafe("SELECT id FROM ");
-  b.appendIdentifier(Identifier.named("students"));
-  b.appendSafe(" WHERE name = ");
-  b.appendString(name);
-  return b.build().render(dialect, style);
-}
+// One query, in the common dialect, checked for every database.
+const b = new QueryBuilder(Dialect.common);
+b.appendSafe('SELECT title, "dueDate" FROM tasks WHERE title LIKE ');
+b.appendString(word);
+b.appendSafe(` || '%' ESCAPE '!' ORDER BY "dueDate" NULLS LAST LIMIT `);
+b.appendInt(20);
+b.appendSafe(" OFFSET ");
+b.appendInt(40);
+const q = b.build();
 
-// Each database's quoting, with the placeholders its driver takes.
-console.log("sqlite: " + find(Dialect.sqlite, PlaceholderStyle.question).sql);
-console.log("postgres: " + find(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql);
-console.log("mysql: " + find(Dialect.mysql, PlaceholderStyle.percentS).sql);
-const r = find(Dialect.duckdb, PlaceholderStyle.dollarNumbered);
+// Rendered for each database, with the placeholders its driver takes.
+console.log("sqlite: " + q.render(Dialect.sqlite, PlaceholderStyle.question).sql);
+console.log("postgres: " + q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql);
+console.log("mysql: " + q.render(Dialect.mysql, PlaceholderStyle.percentS).sql);
+const r = q.render(Dialect.duckdb, PlaceholderStyle.dollarNumbered);
 console.log("duckdb: " + r.sql);
-// The name travels apart from the SQL, for the driver to bind.
+// The values travel apart from the SQL, for the driver to bind.
 console.log("params: " + r.params.length);
 
-// A value inside quotes is refused, not guessed at.
-const bad = new QueryBuilder(Dialect.postgres);
-bad.appendSafe("SELECT id FROM students WHERE name = '");
-bad.appendString(name);
-bad.appendSafe("'");
+// What databases would read differently is refused, with its place.
+const bad = new QueryBuilder(Dialect.common);
+bad.appendSafe("SELECT title, dueDate FROM tasks");
 console.log("refused: " + bad.templateProblem); // and bad.build() throws
 // end snippet

@@ -5,34 +5,31 @@ print the same text. See demos/README.md for how to run them.
 """
 
 # snippet: example
-from wherewith import Dialect, Identifier, PlaceholderStyle, QueryBuilder
+from wherewith import Dialect, PlaceholderStyle, QueryBuilder
 
-name = "Robert'); DROP TABLE students; --"
+word = "Launch"
 
+# One query, in the common dialect, checked for every database.
+b = QueryBuilder(Dialect.common)
+b.append_safe('SELECT title, "dueDate" FROM tasks WHERE title LIKE ')
+b.append_string(word)
+b.append_safe(" || '%' ESCAPE '!' ORDER BY \"dueDate\" NULLS LAST LIMIT ")
+b.append_int(20)
+b.append_safe(" OFFSET ")
+b.append_int(40)
+q = b.build()
 
-def find(dialect, style):
-    """The query for one database, checked with its rules, rendered for it."""
-    b = QueryBuilder(dialect)
-    b.append_safe("SELECT id FROM ")
-    b.append_identifier(Identifier.named("students"))
-    b.append_safe(" WHERE name = ")
-    b.append_string(name)
-    return b.build().render(dialect, style)
-
-
-# Each database's quoting, with the placeholders its driver takes.
-print("sqlite: " + find(Dialect.sqlite, PlaceholderStyle.question).sql)
-print("postgres: " + find(Dialect.postgres, PlaceholderStyle.dollar_numbered).sql)
-print("mysql: " + find(Dialect.mysql, PlaceholderStyle.percent_s).sql)
-r = find(Dialect.duckdb, PlaceholderStyle.dollar_numbered)
+# Rendered for each database, with the placeholders its driver takes.
+print("sqlite: " + q.render(Dialect.sqlite, PlaceholderStyle.question).sql)
+print("postgres: " + q.render(Dialect.postgres, PlaceholderStyle.dollar_numbered).sql)
+print("mysql: " + q.render(Dialect.mysql, PlaceholderStyle.percent_s).sql)
+r = q.render(Dialect.duckdb, PlaceholderStyle.dollar_numbered)
 print("duckdb: " + r.sql)
-# The name travels apart from the SQL, for the driver to bind.
+# The values travel apart from the SQL, for the driver to bind.
 print("params: " + str(len(r.params)))
 
-# A value inside quotes is refused, not guessed at.
-bad = QueryBuilder(Dialect.postgres)
-bad.append_safe("SELECT id FROM students WHERE name = '")
-bad.append_string(name)
-bad.append_safe("'")
+# What databases would read differently is refused, with its place.
+bad = QueryBuilder(Dialect.common)
+bad.append_safe("SELECT title, dueDate FROM tasks")
 print("refused: " + bad.template_problem)  # and bad.build() raises
 # end snippet

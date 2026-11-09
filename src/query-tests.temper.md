@@ -368,37 +368,35 @@ params as they were, and consistent.
 
 ## The site's example
 
-The site's opening example: the same template for each database,
-checked with its rules, and rendered for it. The lines between the
+The site's opening example: one common query, checked for every
+database, and what each database's driver gets. The lines between the
 `snippet` comments go on the site, and the demos in `demos/example/`
-build the same queries from each language, printing what these asserts
+build the same query from each language, printing what these asserts
 check.
 
     test("the site's example") {
       // snippet: temper
-      let name = "Robert'); DROP TABLE students; --";
-      let students = Identifier.named("students") orelse panic();
-      let forSqlite = sqlite"SELECT id FROM ${students} WHERE name = ${name}";
-      let forPostgres = postgres"SELECT id FROM ${students} WHERE name = ${name}";
-      let forMysql = mysql"SELECT id FROM ${students} WHERE name = ${name}";
-      let forDuckdb = duckdb"SELECT id FROM ${students} WHERE name = ${name}";
-      let r = forPostgres.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+      let word = "Launch";
+      let q = sql"""
+        "SELECT title, "dueDate" FROM tasks
+        "WHERE title LIKE ${word} || '%' ESCAPE '!'
+        "ORDER BY "dueDate" NULLS LAST
+        "LIMIT ${20} OFFSET ${40}
+      ;
+      let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
       // end snippet
-      assert(r.sql == "SELECT id FROM \"students\" WHERE name = $1");
-      assert(r.params.length == 1);
-      assert(paramText(r.params[0]) == "text:${name}");
-      assert(qmarks(forSqlite) == "SELECT id FROM \"students\" WHERE name = ?");
-      assert(render(forMysql, Dialect.mysql, PlaceholderStyle.percentS) ==
-        "SELECT id FROM `students` WHERE name = %s");
-      assert(render(forDuckdb, Dialect.duckdb, PlaceholderStyle.dollarNumbered) ==
-        "SELECT id FROM \"students\" WHERE name = $1");
-      assert(render(forPostgres, Dialect.mysql, PlaceholderStyle.percentS) == "(fails)");
-      let quoted = checkTemplate(Dialect.postgres) { b =>
-        b.appendSafe("SELECT id FROM students WHERE name = '");
-        b.appendString(name);
-        b.appendSafe("'");
-      };
-      assert(quoted == "hole inside a quote or comment");
+      assert(r.sql == "SELECT \"title\", \"dueDate\" FROM \"tasks\" WHERE \"title\" LIKE (CAST($1 AS TEXT) || '%') ESCAPE '!' ORDER BY \"dueDate\" LIMIT $2 OFFSET $3");
+      assert(r.params.length == 3);
+      assert(paramText(r.params[0]) == "text:${word}");
+      assert(qmarks(q) == "SELECT \"title\", \"dueDate\" FROM \"tasks\" WHERE \"title\" LIKE (? || '%') ESCAPE '!' ORDER BY \"dueDate\" NULLS LAST LIMIT ? OFFSET ?");
+      assert(render(q, Dialect.mysql, PlaceholderStyle.percentS) ==
+        "SELECT `title`, `dueDate` FROM `tasks` WHERE `title` LIKE (CONCAT(%s, '%%')) ESCAPE '!' ORDER BY `dueDate` IS NULL, `dueDate` LIMIT %s OFFSET %s");
+      assert(render(q, Dialect.duckdb, PlaceholderStyle.dollarNumbered) ==
+        "SELECT \"title\", \"dueDate\" FROM \"tasks\" WHERE \"title\" LIKE ($1 || '%') ESCAPE '!' ORDER BY \"dueDate\" NULLS LAST LIMIT $2 OFFSET $3");
+      let bare = new QueryBuilder(Dialect.common);
+      bare.appendSafe("SELECT title, dueDate FROM tasks");
+      assert(bare.templateProblem ==
+        "bare name not lowercase; quote it to keep its case, at line 1, column 15: SELECT title, dueDate FROM tasks");
     }
 
 ## The site's dialect cards

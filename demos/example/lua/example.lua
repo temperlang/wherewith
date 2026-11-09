@@ -5,34 +5,32 @@
 
 -- snippet: example
 local wherewith = require("wherewith")
-local Dialect, Identifier = wherewith.Dialect, wherewith.Identifier
-local PlaceholderStyle, QueryBuilder = wherewith.PlaceholderStyle, wherewith.QueryBuilder
+local Dialect, PlaceholderStyle = wherewith.Dialect, wherewith.PlaceholderStyle
+local QueryBuilder = wherewith.QueryBuilder
 
-local name = "Robert'); DROP TABLE students; --"
+local word = "Launch"
 
--- The query for one database, checked with its rules, rendered for it.
-local function find(dialect, style)
-  local b = QueryBuilder(dialect)
-  b:appendSafe("SELECT id FROM ")
-  b:appendIdentifier(Identifier.named("students"))
-  b:appendSafe(" WHERE name = ")
-  b:appendString(name)
-  return b:build():render(dialect, style)
-end
+-- One query, in the common dialect, checked for every database.
+local b = QueryBuilder(Dialect.common)
+b:appendSafe('SELECT title, "dueDate" FROM tasks WHERE title LIKE ')
+b:appendString(word)
+b:appendSafe([[ || '%' ESCAPE '!' ORDER BY "dueDate" NULLS LAST LIMIT ]])
+b:appendInt(20)
+b:appendSafe(" OFFSET ")
+b:appendInt(40)
+local q = b:build()
 
--- Each database's quoting, with the placeholders its driver takes.
-print("sqlite: " .. find(Dialect.sqlite, PlaceholderStyle.question).sql)
-print("postgres: " .. find(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql)
-print("mysql: " .. find(Dialect.mysql, PlaceholderStyle.percentS).sql)
-local r = find(Dialect.duckdb, PlaceholderStyle.dollarNumbered)
+-- Rendered for each database, with the placeholders its driver takes.
+print("sqlite: " .. q:render(Dialect.sqlite, PlaceholderStyle.question).sql)
+print("postgres: " .. q:render(Dialect.postgres, PlaceholderStyle.dollarNumbered).sql)
+print("mysql: " .. q:render(Dialect.mysql, PlaceholderStyle.percentS).sql)
+local r = q:render(Dialect.duckdb, PlaceholderStyle.dollarNumbered)
 print("duckdb: " .. r.sql)
--- The name travels apart from the SQL, for the driver to bind.
+-- The values travel apart from the SQL, for the driver to bind.
 print("params: " .. #r.params)
 
--- A value inside quotes is refused, not guessed at.
-local bad = QueryBuilder(Dialect.postgres)
-bad:appendSafe("SELECT id FROM students WHERE name = '")
-bad:appendString(name)
-bad:appendSafe("'")
+-- What databases would read differently is refused, with its place.
+local bad = QueryBuilder(Dialect.common)
+bad:appendSafe("SELECT title, dueDate FROM tasks")
 print("refused: " .. bad.templateProblem) -- and bad:build() raises an error
 -- end snippet

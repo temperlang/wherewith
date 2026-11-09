@@ -1,6 +1,6 @@
-sqlite: SELECT id FROM "students" WHERE name = ?
-postgres: SELECT id FROM "students" WHERE name = $1
-mysql: SELECT id FROM `students` WHERE name = %s
-duckdb: SELECT id FROM "students" WHERE name = $1
-params: 1
-refused: hole inside a quote or comment
+sqlite: SELECT "title", "dueDate" FROM "tasks" WHERE "title" LIKE (? || '%') ESCAPE '!' ORDER BY "dueDate" NULLS LAST LIMIT ? OFFSET ?
+postgres: SELECT "title", "dueDate" FROM "tasks" WHERE "title" LIKE (CAST($1 AS TEXT) || '%') ESCAPE '!' ORDER BY "dueDate" LIMIT $2 OFFSET $3
+mysql: SELECT `title`, `dueDate` FROM `tasks` WHERE `title` LIKE (CONCAT(%s, '%%')) ESCAPE '!' ORDER BY `dueDate` IS NULL, `dueDate` LIMIT %s OFFSET %s
+duckdb: SELECT "title", "dueDate" FROM "tasks" WHERE "title" LIKE ($1 || '%') ESCAPE '!' ORDER BY "dueDate" NULLS LAST LIMIT $2 OFFSET $3
+params: 3
+refused: bare name not lowercase; quote it to keep its case, at line 1, column 15: SELECT title, dueDate FROM tasks

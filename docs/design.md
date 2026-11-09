@@ -656,8 +656,8 @@ Each chunk is one commit, tested on every backend:
    on PostgreSQL and MariaDB in CI, a MySQL service, and the statement
    rules' corpus.
 7. **Fuzzing** (small to medium): the generator and mutations.
-8. **Docs** (small): the README, the site, and the demos lead with the
-   common dialect.
+8. **Docs** (done, 2026-11-09): the README, the site, and the demos
+   lead with the common dialect.
 
 ## Parameters per driver
 

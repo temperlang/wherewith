@@ -7,32 +7,29 @@
 using System;
 using Wherewith;
 
-var name = "Robert'); DROP TABLE students; --";
+var word = "Launch";
 
-// The query for one database, checked with its rules, rendered for it.
-RenderedQuery Find(Dialect dialect, PlaceholderStyle style)
-{
-    var b = new QueryBuilder(dialect);
-    b.AppendSafe("SELECT id FROM ");
-    b.AppendIdentifier(Identifier.Named("students"));
-    b.AppendSafe(" WHERE name = ");
-    b.AppendString(name);
-    return b.Build().Render(dialect, style);
-}
+// One query, in the common dialect, checked for every database.
+var b = new QueryBuilder(Dialect.Common);
+b.AppendSafe("SELECT title, \"dueDate\" FROM tasks WHERE title LIKE ");
+b.AppendString(word);
+b.AppendSafe(" || '%' ESCAPE '!' ORDER BY \"dueDate\" NULLS LAST LIMIT ");
+b.AppendInt(20);
+b.AppendSafe(" OFFSET ");
+b.AppendInt(40);
+var q = b.Build();
 
-// Each database's quoting, with the placeholders its driver takes.
-Console.WriteLine("sqlite: " + Find(Dialect.Sqlite, PlaceholderStyle.Question).Sql);
-Console.WriteLine("postgres: " + Find(Dialect.Postgres, PlaceholderStyle.DollarNumbered).Sql);
-Console.WriteLine("mysql: " + Find(Dialect.Mysql, PlaceholderStyle.PercentS).Sql);
-var r = Find(Dialect.Duckdb, PlaceholderStyle.DollarNumbered);
+// Rendered for each database, with the placeholders its driver takes.
+Console.WriteLine("sqlite: " + q.Render(Dialect.Sqlite, PlaceholderStyle.Question).Sql);
+Console.WriteLine("postgres: " + q.Render(Dialect.Postgres, PlaceholderStyle.DollarNumbered).Sql);
+Console.WriteLine("mysql: " + q.Render(Dialect.Mysql, PlaceholderStyle.PercentS).Sql);
+var r = q.Render(Dialect.Duckdb, PlaceholderStyle.DollarNumbered);
 Console.WriteLine("duckdb: " + r.Sql);
-// The name travels apart from the SQL, for the driver to bind.
+// The values travel apart from the SQL, for the driver to bind.
 Console.WriteLine("params: " + r.Params.Count);
 
-// A value inside quotes is refused, not guessed at.
-var bad = new QueryBuilder(Dialect.Postgres);
-bad.AppendSafe("SELECT id FROM students WHERE name = '");
-bad.AppendString(name);
-bad.AppendSafe("'");
+// What databases would read differently is refused, with its place.
+var bad = new QueryBuilder(Dialect.Common);
+bad.AppendSafe("SELECT title, dueDate FROM tasks");
 Console.WriteLine("refused: " + bad.TemplateProblem); // and bad.Build() throws
 // end snippet

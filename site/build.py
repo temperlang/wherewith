@@ -19,8 +19,9 @@ The code comes from code that runs, so it can't go stale:
 - Each language's code is the `snippet: example` part of its program in
   `demos/example/`, and the output shown is `demos/example/expected.txt`,
   which CI checks every program prints (`demos/run.py`).
-- The opening's rendered queries are that output, and its templates, one
-  per database, are the Temper's.
+- The opening's common query is the Temper's, and what each database's
+  driver gets is that output. Its notes on why each differs name pieces
+  of that SQL, and the build fails if one isn't there.
 - The dialect table, and the placeholder styles, come from
   `docs/design.md`.
 - Each card on where dialects differ shows the rows of a test in
@@ -159,51 +160,148 @@ def example_output():
     return text, rendered, rest
 
 
-def sql_html(sql):
-    """Rendered SQL with its quoted names and its placeholder marked."""
-    out = esc(sql)
-    out = re.sub(r"(&quot;[^&]*&quot;|`[^`]*`)", r'<span class="q-name">\1</span>', out)
-    return re.sub(r"(\S+)$", r'<span class="q-param">\1</span>', out)
+# What the opening says about each database's SQL: the pieces that differ
+# from the others, marked, and why. Each piece must be in that database's
+# SQL, and each `absent` must not, so the notes can't outlive the output.
+RENDER_NOTES = {
+    "sqlite": {
+        "marks": ["NULLS LAST"],
+        "absent": [],
+        "why": "Sorts nulls first going up, so it keeps <code>NULLS LAST</code>.",
+    },
+    "postgres": {
+        "marks": ["CAST($1 AS TEXT)"],
+        "absent": ["NULLS"],
+        "why": (
+            "Already sorts nulls last going up, so <code>NULLS LAST</code> goes. "
+            "The value gets a cast, so <code>||</code> reads it as text, whatever type the driver sends."
+        ),
+    },
+    "mysql": {
+        "marks": ["CONCAT", "`dueDate` IS NULL,", "'%%'"],
+        "absent": ["||", "NULLS"],
+        "why": (
+            "<code>||</code> means <code>OR</code> here, so it&#8217;s <code>CONCAT</code>. "
+            "No <code>NULLS LAST</code>, so it sorts by <code>IS NULL</code> first. "
+            "With <code>%s</code> placeholders, <code>%</code> doubles."
+        ),
+    },
+    "duckdb": {
+        "marks": ["NULLS LAST"],
+        "absent": [],
+        "why": "Where nulls sort is a setting, so <code>NULLS LAST</code> is always written.",
+    },
+}
+
+SQL_TOKEN = r"('(?:[^']|'')*')|(\"[^\"]*\"|`[^`]*`)|(\?|\$\d+|%s)"
 
 
-def template_html(line):
-    """The Temper template, with its holes marked."""
-    m = re.search(r'(\w+)"(.*)"', line)
-    if not m:
-        raise SystemExit(f"Can't find the template in {line!r}.")
-    body = re.sub(r"\$\{(\w+)\}", lambda h: f'<span class="hole">${{{esc(h[1])}}}</span>', esc(m[2]))
-    return f'<span class="tag">{esc(m[1])}</span>"{body}"'
+def sql_tokens_html(sql):
+    """SQL as HTML, with quoted names and placeholders marked, and a line
+    break before each clause, outside quotes."""
+    out = []
+    last = 0
+    for m in re.finditer(SQL_TOKEN, sql):
+        plain = esc(sql[last : m.start()])
+        out.append(re.sub(r" (WHERE|ORDER BY|LIMIT) ", r"\n\1 ", plain))
+        if m[1]:
+            out.append(f'<span class="q-str">{esc(m[1])}</span>')
+        elif m[2]:
+            out.append(f'<span class="q-name">{esc(m[2])}</span>')
+        else:
+            out.append(f'<span class="q-param">{esc(m[3])}</span>')
+        last = m.end()
+    out.append(re.sub(r" (WHERE|ORDER BY|LIMIT) ", r"\n\1 ", esc(sql[last:])))
+    return "".join(out)
+
+
+def sql_html(key, sql):
+    """A database's SQL, with the pieces its notes name marked."""
+    notes = RENDER_NOTES[key]
+    for piece in notes["marks"]:
+        if piece not in sql:
+            raise SystemExit(f"The {key} SQL has no {piece!r}, which the opening marks: {sql}")
+    for piece in notes["absent"]:
+        if piece in sql:
+            raise SystemExit(f"The {key} SQL has {piece!r}, which the opening says it doesn't: {sql}")
+    marks = "|".join(re.escape(p) for p in sorted(notes["marks"], key=len, reverse=True))
+    out = []
+    last = 0
+    for m in re.finditer(marks, sql):
+        out.append(sql_tokens_html(sql[last : m.start()]))
+        out.append(f"<mark>{sql_tokens_html(m[0])}</mark>")
+        last = m.end()
+    out.append(sql_tokens_html(sql[last:]))
+    return "".join(out)
+
+
+def common_query(temper):
+    """The Temper's common query, from `let q = sql\"\"\"` to its `;`, as
+    highlighted HTML, and its holes' values, in order."""
+    lines = temper.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith('let q = sql"""')]
+    if len(starts) != 1:
+        raise SystemExit('The Temper snippet needs one `let q = sql"""` query.')
+    end = next((i for i in range(starts[0], len(lines)) if lines[i].strip() == ";"), None)
+    if end is None:
+        raise SystemExit("The Temper snippet's query needs its own `;` line.")
+    values = dict(re.findall(r'let (\w+) = ("[^"]*");', temper))
+    holes = []
+
+    def hole(m):
+        expr = m[1]
+        if not (expr.isdigit() or expr in values):
+            raise SystemExit(f"The opening can't show the value of ${{{expr}}}.")
+        holes.append(values.get(expr, expr))
+        return f'<span class="hole">${{{esc(expr)}}}</span>'
+
+    out = ['<span class="tok-keyword">let</span> q = <span class="tag">sql</span>"""']
+    for line in lines[starts[0] + 1 : end]:
+        m = re.fullmatch(r'(\s*)"(.*)', line)
+        if not m:
+            raise SystemExit(f"Each line of the query starts with a quote: {line!r}")
+        body = re.sub(r"\$\{(\w+)\}", hole, esc(m[2]))
+        out.append(f'{m[1]}<span class="margin">"</span>{body}')
+    out.append(";")
+    return "\n".join(out), values, holes
 
 
 def hero(temper, rendered, rest):
-    """The opening: the hostile value, then each database's Temper
-    template and the query its driver gets. Each tag is named for its
-    dialect, so a template only renders for its own database."""
-    templates = {}
-    for line in temper.splitlines():
-        if m := re.search(r'= (\w+)"', line):
-            templates[m[1]] = line
-    value = re.search(r'let name = "(.*)";', temper)
-    if set(templates) != set(DIALECTS) or not value:
-        raise SystemExit("The Temper snippet needs a template for each database and a `let name`.")
-    if rest["params"] != "1":
-        raise SystemExit("The example should have one parameter.")
+    """The opening: one common query, as written in Temper, then what each
+    database's driver gets, with what differs marked, and why."""
+    query, values, holes = common_query(temper)
+    if rest["params"] != str(len(holes)):
+        raise SystemExit(f"The example has {rest['params']} parameters, and the query {len(holes)} holes.")
+    if "word" not in values:
+        raise SystemExit("The Temper snippet needs a `let word`.")
+    # What the note under the query names.
+    for piece in ['"dueDate"', "ESCAPE"]:
+        if esc(piece) not in query:
+            raise SystemExit(f"The opening's note names {piece}, which the query doesn't have.")
     rows = []
     for key, sql in rendered:
-        placeholder = sql.rsplit(" ", 1)[1]
+        placeholder = re.search(r"\?|\$1|%s", sql)
+        if not placeholder:
+            raise SystemExit(f"The {key} SQL has no placeholder: {sql}")
         rows.append(
-            f'<li><span class="db">{esc(DIALECTS[key])}</span>'
-            f'<code class="template">{template_html(templates[key])}</code>'
-            f'<span class="out"><span class="arrow" aria-label="renders as">→</span> '
-            f'<code class="sql">{sql_html(sql)}</code> '
-            f'<span class="style">with <code>{esc(placeholder)}</code></span></span></li>'
+            '<li class="target">'
+            f'<p class="db">{esc(DIALECTS[key])} <span class="style"><code>{esc(placeholder[0])}</code> placeholders</span></p>'
+            f'<pre class="sql" tabindex="0" aria-label="SQL for {esc(DIALECTS[key])}"><code>{sql_html(key, sql)}</code></pre>'
+            f'<p class="why">{RENDER_NOTES[key]["why"]}</p>'
+            "</li>"
         )
+    params = ", ".join(f"<code>{esc(v)}</code>" for v in holes)
     return (
         '<div class="hero-demo">'
-        f'<p class="value"><span class="label">Where <code>name</code> is</span> <code>"{esc(value[1])}"</code></p>'
-        '<p class="label">Each database&#8217;s template, checked with its rules, and the query its driver gets</p>'
+        f'<p class="label">Written once, in Temper, where <code>word</code> is <code>{esc(values["word"])}</code></p>'
+        f'<pre class="source common-query" tabindex="0" aria-label="The common query"><code>{query}</code></pre>'
+        '<p class="checked">Checked once, for all four: bare names are lowercase, since PostgreSQL folds them, '
+        "so <code>\"dueDate\"</code> is quoted to keep its case, and a pattern that isn&#8217;t a literal "
+        "needs <code>ESCAPE</code>, since PostgreSQL and MySQL read <code>\\</code> in it as an escape, "
+        "and SQLite and DuckDB don&#8217;t.</p>"
+        '<p class="label">What each database&#8217;s driver gets, with what differs marked</p>'
         f'<ul class="rendered">{"".join(rows)}</ul>'
-        f'<p class="params"><span class="q-param-key">Parameter 1</span> <code>"{esc(value[1])}"</code>'
+        f'<p class="params"><span class="q-param-key">Parameters</span> {params}'
         ' <span class="label">sent apart, for the driver to bind</span></p>'
         "</div>"
     )

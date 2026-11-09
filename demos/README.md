@@ -2,15 +2,15 @@
 
 ## Example
 
-`example/` builds the same query in each supported language: a name bound
-as a parameter and a table name quoted, for SQLite, PostgreSQL, MySQL and
-MariaDB, and DuckDB, each checked with its database's rules and rendered
-with a placeholder style its drivers take, then a value inside quotes,
-refused. Every version prints the same text,
-`example/expected.txt`, so the examples double as a cross-language test.
-The site shows them.
+`example/` builds the same common query in each supported language,
+checked once for every database, and renders it for SQLite, PostgreSQL,
+MySQL and MariaDB, and DuckDB, each with a placeholder style its drivers
+take; then a bare mixed-case name, refused, since PostgreSQL would fold
+it. Every version prints the same text, `example/expected.txt`, so the
+examples double as a cross-language test. The site shows them.
 
-A full tour of the API comes once the statement model lands.
+A full tour of the API comes once the common dialect's checks are
+complete.
 
 First build the libraries from the repo's top, with
 [Temper](https://temperlang.dev/):

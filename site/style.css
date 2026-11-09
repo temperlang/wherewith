@@ -15,12 +15,14 @@
   --number: #b0461a;
   --comment: #5f6977;
   --type: #1d5fa8;
-  /* The opening: holes, quoted names, and placeholders. */
+  /* The opening: holes, quoted names, placeholders, and what differs. */
   --hole: #b0461a;
   --hole-bg: #fdf0e6;
   --name: #3d4fc4;
   --param: #0b7a72;
   --param-bg: #e6f5f3;
+  --mark-bg: #fdeaa6;
+  --mark-edge: #e2b93b;
   /* What a card's dialect refuses. */
   --refused: #b42318;
   color-scheme: light dark;
@@ -51,6 +53,8 @@
     --name: #9aa8ff;
     --param: #5fd6c8;
     --param-bg: #12302d;
+    --mark-bg: #45390f;
+    --mark-edge: #8a7020;
     --refused: #ff9d8f;
   }
 }
@@ -154,7 +158,7 @@ h2 {
   font-size: 0.95rem;
 }
 
-/* The opening: one template, and the query each database gets. */
+/* The opening: one common query, and what each database gets. */
 
 .opening {
   background: var(--surface);
@@ -191,7 +195,6 @@ h2 {
 }
 
 .hero-demo {
-  max-width: 52rem;
   padding: 1rem 1.1rem;
   border: 1px solid var(--border);
   border-radius: 0.6rem;
@@ -207,13 +210,21 @@ h2 {
   color: var(--muted);
 }
 
-.template {
-  font-weight: 600;
-  overflow-wrap: anywhere;
+/* The common query, as written. */
+.hero-demo pre.common-query {
+  margin: 0.3rem 0 0.4rem;
+  max-width: 44rem;
+  font-size: 0.9rem;
 }
 
-.template .tag {
+.tag {
   color: var(--keyword);
+  font-weight: 600;
+}
+
+/* The quote starting each line of a Temper multi-line string. */
+.margin {
+  color: var(--muted);
 }
 
 .hole {
@@ -223,65 +234,82 @@ h2 {
   padding: 0 0.1em;
 }
 
-.value {
-  margin-bottom: 0.6rem !important;
-}
-
-.value code {
-  color: var(--hole);
-}
-
-.arrow {
+.hero-demo .checked {
+  max-width: 52rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
   color: var(--muted);
 }
 
-/* Each database: its name, beside its template over its query. */
+/* What each database's driver gets: two across, or one on a phone. */
 .rendered {
   list-style: none;
-  margin: 0.3rem 0 0.6rem;
+  margin: 0.3rem 0 0.8rem;
   padding: 0;
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 0.55rem 0.9rem;
-  align-items: baseline;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 27rem), 1fr));
+  gap: 0.7rem;
 }
 
-.rendered li {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: subgrid;
-  row-gap: 0.2rem;
-  align-items: baseline;
+.target {
+  min-width: 0;
+  padding: 0.6rem 0.75rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
 }
 
-.rendered .db {
+.hero-demo .db {
+  margin-bottom: 0.3rem;
   font-weight: 650;
-  grid-row: span 2;
 }
 
-.rendered .template,
-.rendered .out {
-  grid-column: 2;
-}
-
-.rendered .style {
-  font-size: 0.85rem;
+.db .style {
+  margin-left: 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 400;
   color: var(--muted);
 }
 
-.rendered .sql {
-  overflow-wrap: anywhere;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
-  padding: 0.15rem 0.5rem;
-  border-radius: 0.35rem;
+pre.sql {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.4rem;
   background: var(--code-bg);
   border: 1px solid var(--border);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+pre.sql mark {
+  color: inherit;
+  background: var(--mark-bg);
+  box-shadow: inset 0 -2px var(--mark-edge);
+  border-radius: 0.2rem;
+  padding: 0 0.1em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.hero-demo .why {
+  margin-top: 0.45rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.why code {
+  color: var(--text);
 }
 
 .q-name {
   color: var(--name);
   font-weight: 650;
+}
+
+.q-str {
+  color: var(--string);
 }
 
 .q-param {
@@ -305,20 +333,18 @@ h2 {
   padding: 0.05rem 0.4rem;
 }
 
-/* On a phone, each database over its template and query. */
+/* On a phone, less padding, for the SQL's width. */
 @media (max-width: 40rem) {
-  .rendered {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.7rem;
+  .hero-demo {
+    padding: 0.75rem 0.6rem;
   }
 
-  .rendered .db {
-    grid-row: auto;
+  .target {
+    padding: 0.5rem 0.55rem 0.6rem;
   }
 
-  .rendered .template,
-  .rendered .out {
-    grid-column: 1;
+  .hero-demo pre.common-query {
+    font-size: 0.82rem;
   }
 }
 
