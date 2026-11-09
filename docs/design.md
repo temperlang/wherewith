@@ -9,8 +9,9 @@ the pieces a safe-composition framework, a query builder, or an admin
 tool needs: quoting and templates for each database, done right.
 
 The common dialect is [designed below](#the-common-dialect), and being
-built: its tag and lexer are done, and its parser, checks, and
-rendering are next. Quoting and per-database templates are done.
+built: its tag, lexer, and expressions are done, and statements, the
+rest of the checks, and rendering are next. Quoting and per-database
+templates are done.
 
 ## Goals
 
@@ -223,8 +224,8 @@ Also planned:
 ## The common dialect
 
 Status: designed (2026-11-07), with its open questions decided
-(2026-11-09, under [Decided](#decided)). Built: chunk 1 of the
-[plan](#plan), the lexer and tag.
+(2026-11-09, under [Decided](#decided)). Built: chunks 1 and 2 of the
+[plan](#plan), the lexer and tag, and expressions.
 
 One query, written once, rendered for each database:
 
@@ -366,7 +367,7 @@ predicate = concat [cmp concat | "IS" ["NOT"] "NULL"
 concat    = sum {"||" sum}
 sum       = product {("+" | "-") product}
 product   = unary {("*" | "/" | "%") unary}
-unary     = ["-" | "+"] primary
+unary     = ("-" | "+") unary | primary
 primary   = literal | VALUE_HOLE | column | "(" expr ")" | subquery
           | "EXISTS" subquery | case | cast | call
 subquery  = "(" (select | QUERY_HOLE) ")"
@@ -377,6 +378,17 @@ column    = name ["." name]
 qname     = name ["." name]
 name      = BARE | QUOTED | NAME_HOLE
 ```
+
+Expressions (built; `src/common-expressions.temper.md` has the
+details) parse to a tree of plain classes, with holes kept as their
+place among the template's holes. Where the databases read the same
+text differently, the parser refuses it: predicates don't chain
+(`a = b IS NULL` too), `||` beside arithmetic needs parentheses,
+names have at most two parts (DuckDB can read a third as a field),
+`TRIM` takes one argument (MySQL's second is a string to remove, the
+others' a set of characters), `DISTINCT` goes only in aggregates, and
+a nested query goes only in its own parentheses. A printer writes the
+tree back as canonical common SQL, with only the parentheses needed.
 
 Lexing rules (built; `src/common.temper.md` has the details): ASCII
 whitespace (not vertical tab, which SQLite refuses); `--` comments to
@@ -448,6 +460,19 @@ gives the first problem with its position:
   SQLite and MySQL convert), a `SUBSTR` start below 1, and an `UPDATE`
   that reads a column it set earlier in the same `SET`, since MySQL
   assigns left to right.
+
+Built so far, for expressions: `= NULL` and `NULL` in `IN` lists,
+`/` without a float operand (a float value, a decimal, `AVG`, a
+`CAST` to `DOUBLE`, or arithmetic on one), `%` with a float (SQLite
+truncates it), `/` or `%` by a literal zero, `LIKE` without `ESCAPE`
+on anything but a literal, `ESCAPE` other than one character (not `'`,
+`%`, or `_`), `SUBSTR` with a literal start below 1 or a negative
+length, aggregates inside aggregates, and kinds the text or values
+show that databases convert differently: text or booleans in
+arithmetic, numbers or text as conditions, comparing different kinds,
+`CASE` and `COALESCE` mixing kinds, booleans or floats in `||`, and
+casts of booleans, of floats to `INTEGER` or `TEXT`, and of strings
+that aren't plain numbers to `INTEGER` or `DOUBLE`.
 
 Narrower targets relax only the checks for the dialects left out.
 The default set is every profile now; a new database (SQL Server,
@@ -555,8 +580,9 @@ Each chunk is one commit, tested on every backend:
    tag, tokens, holes by kind, and errors with positions. Common
    queries render only for `Dialect.common`, as written, until
    chunk 4.
-2. **Expressions** (medium, ~700): the tree, the expression parser,
-   the canonical printer, and the depth limit.
+2. **Expressions** (done, 2026-11-09): the tree, the expression
+   parser, the canonical printer, the depth limit, and the checks an
+   expression alone can show.
 3. **Statements** (medium, ~600): `SELECT`, `INSERT`, `UPDATE`, and
    `DELETE`, subqueries, nesting, and builder targets.
 4. **Rendering** (medium to large, ~800): every profile, with the

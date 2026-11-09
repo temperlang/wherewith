@@ -3,9 +3,11 @@
 The common dialect is SQL written once for every database Wherewith
 knows: a strict subset that each one reads the same way. The
 [design](../docs/design.md#the-common-dialect) has the whole plan.
-Built so far: the `sql` tag, `Dialect.common`, and the lexer, which
-reads a template into tokens and refuses anything outside the subset,
-with the line and column of the problem. The parser, the check stage,
+Built so far: the `sql` tag, `Dialect.common`, the lexer, which reads
+a template into tokens and refuses anything outside the subset, with
+the line and column of the problem, and the parser for
+[expressions](common-expressions.temper.md), with the checks an
+expression alone can show. Statements, the rest of the check stage,
 and rendering for each database come next.
 
 ## Profile
@@ -32,8 +34,8 @@ For now a common query renders only for `Dialect.common`, writing its
 text as it was written, with names quoted the shared core's way and
 values as placeholders; for any other dialect, `render` bubbles with
 `renderProblem` saying that isn't built yet. Exact rendering for each
-database needs the parser, so that a query never renders to SQL that
-could mean something else.
+database needs the statement parser, so that a query never renders to
+SQL that could mean something else.
 
     export class SqlTag {
       private b: QueryBuilder = new QueryBuilder(Dialect.common);
@@ -103,8 +105,9 @@ and refuses everything outside the subset:
   NUL anywhere.
 
 Holes are tokens of their kind: a value, a name (an `Identifier`), or
-a nested query. Until the parser lands, the lexer checks their places
-only as far as the tokens beside them show:
+a nested query. The expression parser decides where each kind goes in
+an expression; until statements parse too, the lexer checks their
+places as far as the tokens beside them show:
 
 - A nested query goes in parentheses, alone: `(${q})`.
 - Only a name goes next to `.`, or after `AS`, `FROM`, `JOIN`, `INTO`,
@@ -128,6 +131,8 @@ run (the text between two holes), and string indexes into it.
       public column: Int,
       // Code points before it in the template, with holes as `${…}`.
       public offset: Int,
+      // A keyword's, word's, or bare name's text, lowercase, or else "".
+      public word: String,
     ) {}
 
 Token kinds.
@@ -288,7 +293,7 @@ written `${…}` for positions.
         } else {
           tokenValueHole
         };
-        let token = new CommonToken(tokenKind, -1, String.begin, String.begin, line, column, offset);
+        let token = new CommonToken(tokenKind, -1, String.begin, String.begin, line, column, offset, "");
         add(token, offset + 4);
         if (kind == holeQuery) { queryHole = token; }
         column += 4;
@@ -417,7 +422,7 @@ doubled quotes made single, must suit every target.
             add(
               new CommonToken(
                 if (isString) { tokenString } else { tokenQuotedName },
-                run, start, i, startLine, startColumn, startOffset,
+                run, start, i, startLine, startColumn, startOffset, "",
               ),
               offset,
             );
@@ -535,7 +540,7 @@ of at most 18 digits, leading zeros aside.
         } else if (kind == tokenDecimal && digits > 18) {
           report("decimal with more than 18 digits", startLine, startColumn, startOffset);
         }
-        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset), offset);
+        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset, ""), offset);
         i
       }
 
@@ -570,7 +575,7 @@ A keyword, or a bare name, which must be lowercase.
             if (found != null) { report(found, startLine, startColumn, startOffset); }
           }
         }
-        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset), offset);
+        add(new CommonToken(kind, run, start, i, startLine, startColumn, startOffset, name), offset);
         i
       }
 
@@ -644,7 +649,7 @@ An operator, or a refused character.
         }
         var i = step(text, start);
         if (size == 2) { i = step(text, i); }
-        add(new CommonToken(tokenSymbol, run, start, i, startLine, startColumn, startOffset), offset);
+        add(new CommonToken(tokenSymbol, run, start, i, startLine, startColumn, startOffset, ""), offset);
         i
       }
 
@@ -696,6 +701,43 @@ Whether a name, not a value, comes after a token.
           wordIs(token, "into") || wordIs(token, "update") || wordIs(token, "set")
       }
 
+`tokenText` is a token's text as written, or `${…}` for a hole.
+
+      public tokenText(t: CommonToken): String {
+        if (t.run < 0) { holeMark } else { runs[t.run].slice(t.begin, t.end) }
+      }
+
+`nameValue` is the name a bare or quoted name's token is, and
+`stringValue` the text a string's token is, each with its doubled
+quotes made single.
+
+      public nameValue(t: CommonToken): String {
+        if (t.kind == tokenQuotedName) { unquoted(t) } else { t.word }
+      }
+
+      public stringValue(t: CommonToken): String { unquoted(t) }
+
+      private unquoted(t: CommonToken): String {
+        let text = runs[t.run];
+        let quote = text[t.begin];
+        let last = text.prev(t.end);
+        let value = new StringBuilder();
+        var i = text.next(t.begin);
+        var from = i;
+        while (i < last) {
+          if (text[i] == quote) {
+            let next = text.next(i);
+            value.appendBetween(text, from, next);
+            i = text.next(next);
+            from = i;
+          } else {
+            i = text.next(i);
+          }
+        }
+        value.appendBetween(text, from, last);
+        value.toString()
+      }
+
 `report` keeps the first problem, placed at a line, column, and
 offset.
 
@@ -706,7 +748,7 @@ offset.
 `located` adds the place to a message: the line and column, and up to
 20 code points of the line on each side, from the template so far.
 
-      private located(message: String, atLine: Int, atColumn: Int, at: Int): String {
+      public located(message: String, atLine: Int, atColumn: Int, at: Int): String {
         let all = new StringBuilder();
         for (var p = 0; p < pieces.length; p += 1) { all.append(pieces[p]); }
         let shown = all.toString();
