@@ -5,11 +5,11 @@ knows: a strict subset that each one reads the same way. The
 [design](../docs/design.md#the-common-dialect) has the whole plan.
 Built so far: the `sql` tag, `Dialect.common`, the lexer, which reads
 a template into tokens and refuses anything outside the subset, with
-the line and column of the problem, and the parser for
+the line and column of the problem, the parser for
 [expressions](common-expressions.temper.md) and
-[statements](common-statements.temper.md), with the checks they show.
-The rest of the check stage, and rendering for each database, come
-next.
+[statements](common-statements.temper.md), with the checks they show,
+and [rendering](common-rendering.temper.md) for each database. The
+rest of the check stage comes next.
 
 ## Profile
 
@@ -28,15 +28,18 @@ runs, and panicking on a problem:
 let users = Identifier.named("Users") orelse panic();
 let q = sql"select name from ${users} where id = ${42}";
 q.dialect; // Dialect.common
+q.render(Dialect.sqlite, PlaceholderStyle.question).sql;
+// SELECT "name" FROM "Users" WHERE "id" = ?
 q.render(Dialect.common, PlaceholderStyle.question).sql;
 // SELECT name FROM "Users" WHERE id = ?
 ```
 
-For now a common query renders only for `Dialect.common`, as canonical
-common SQL written from its tree: keywords in capitals, names bare
-where they can be, comments gone, and values as placeholders. For any
-other dialect, `render` bubbles with `renderProblem` saying that isn't
-built yet.
+A common query renders for each database it was checked for (its
+`targets`, every database by default), as the
+[rendering rules](common-rendering.temper.md) say, and for
+`Dialect.common`, as canonical common SQL written from its tree:
+keywords in capitals, names bare where they can be, comments gone, and
+values as placeholders.
 
     export class SqlTag {
       private b: QueryBuilder = new QueryBuilder(Dialect.common);
@@ -467,11 +470,8 @@ since `NO_BACKSLASH_ESCAPES` reads it differently.
 
 What's wrong with a string or name for some target, or null.
 
-      // Index loops, since Temper can't yet return from a for-of loop
-      // in a method.
       private stringTargetProblem(value: String, targets: List<Dialect>): String? {
-        for (var t = 0; t < targets.length; t += 1) {
-          let d = targets[t];
+        for (let d of targets) {
           let found = d.stringProblem(value);
           if (found != null) { return "${found} for ${d.name}"; }
           if (d.name == "mysql" && hasCodePoint(value, char'\\')) {
@@ -482,8 +482,7 @@ What's wrong with a string or name for some target, or null.
       }
 
       private nameTargetProblem(name: String, targets: List<Dialect>): String? {
-        for (var t = 0; t < targets.length; t += 1) {
-          let d = targets[t];
+        for (let d of targets) {
           let found = d.nameProblem(name);
           if (found != null) { return "${found} for ${d.name}"; }
         }

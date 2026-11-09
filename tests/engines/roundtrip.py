@@ -16,6 +16,9 @@ back. The checks here are the same for every engine:
    and random templates mixing holes with quoted literals, names, and
    comments check that the builder's lexer and the engine agree on
    every boundary.
+5. Common queries, rendered for the engine, give the rows the shared
+   corpus in `common_corpus.py` expects, the same on every engine but
+   for documented differences, and random ones give SQLite's rows.
 """
 
 import argparse
@@ -255,6 +258,11 @@ class Engine:
     exact_floats = True
     # After CREATE TABLE's column list.
     table_options = ""
+    # For the common corpus: the engine's name there, and its column
+    # types and table options.
+    corpus_name = ""
+    corpus_types = {"int": "BIGINT", "text": "TEXT", "float": "DOUBLE PRECISION", "bool": "BOOLEAN"}
+    corpus_options = ""
 
     def describe(self) -> str:
         raise NotImplementedError
@@ -698,6 +706,7 @@ def arguments(doc: str, server: tuple[str, str, str, int] | None = None) -> argp
     parser.add_argument("--seed", type=int, default=20261106)
     parser.add_argument("--fuzz", type=int, default=3000, help="random strings to add")
     parser.add_argument("--templates", type=int, default=3000, help="random templates to run")
+    parser.add_argument("--common", type=int, default=500, help="random common queries to run")
     parser.add_argument("-v", "--verbose", action="store_true", help="list every failure")
     if server:
         name, host_var, port_var, port = server
@@ -744,12 +753,20 @@ def run_all(e: Engine, args, label: str = "", strings: list[str] | None = None) 
         ("params", lambda: check_params(e, strings)),
         ("nesting", lambda: check_nesting(e)),
         ("random templates", lambda: check_random_templates(e, strings, args.seed, args.templates)),
+        ("common corpus", lambda: check_common(e, args)),
     ]:
         t = time.perf_counter()
         before = len(failures)
         run()
         if args.verbose or len(failures) > before:
             print(f"  {label}{name}: {len(failures) - before} failures, {time.perf_counter() - t:.1f} s")
+
+
+def check_common(e: Engine, args) -> None:
+    import common_corpus  # noqa: PLC0415
+
+    if e.corpus_name:
+        common_corpus.check(e, args.seed, args.common)
 
 
 def finish(args, started: float) -> int:

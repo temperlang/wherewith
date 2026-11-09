@@ -486,8 +486,8 @@ query whose parts don't parse can't render.
       let r = q.render(Dialect.common, PlaceholderStyle.atNamed) orelse panic();
       assert(r.sql == "SELECT name, nick AS shown FROM \"Users\" WHERE id = @p1 AND name LIKE 'a%' ORDER BY name NULLS LAST LIMIT @p2");
       assert(r.params.length == 2 && paramText(r.params[1]) == "int:10");
-      assert(q.renderProblem(Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
-        "rendering a common query for postgres isn't built yet");
+      assert(render(q, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT \"name\", \"nick\" AS \"shown\" FROM \"Users\" WHERE \"id\" = $1 AND \"name\" LIKE 'a%' ORDER BY \"name\" LIMIT $2");
       // Named styles look at the text written, which has no comments.
       let timed = sql"SELECT a FROM t /* at 12:30 */ WHERE b = ${1}";
       assert(render(timed, Dialect.common, PlaceholderStyle.colonNamed) == "SELECT a FROM t WHERE b = :p1");

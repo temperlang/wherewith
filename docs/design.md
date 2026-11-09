@@ -8,10 +8,11 @@ it for each, with values always bound as parameters. Underneath are
 the pieces a safe-composition framework, a query builder, or an admin
 tool needs: quoting and templates for each database, done right.
 
-The common dialect is [designed below](#the-common-dialect), and being
-built: its tag, lexer, expressions, and statements are done, and
-rendering for each database and the rest of the checks are next.
-Quoting and per-database templates are done.
+The common dialect is [designed below](#the-common-dialect), and
+usable end to end: its tag, lexer, expressions, statements, and
+rendering for each database are done, checked on the real engines, and
+the rest of the checks are next. Quoting and per-database templates are
+done.
 
 ## Goals
 
@@ -162,8 +163,11 @@ Done:
   copy, so later changes to the caller's list can't make the parts
   and `params` disagree.
   Temper's private constructors are still public in some backends, a
-  known limitation, so `new Query(dialect, parts)` may be callable
-  there, with the same danger.
+  known limitation, so `new Query(dialect, parts, targets)` may be
+  callable there, with the same danger. `targets` lists the databases
+  a common query was checked for and renders for (just its dialect for
+  a database's query); `unchecked` takes them too, every database by
+  default.
 - `Query.render(dialect, style)` gives a `RenderedQuery`, with `sql`
   and `params`: names quoted for the dialect, and each parameter
   written in a `PlaceholderStyle`, chosen at render time: `question`
@@ -174,16 +178,17 @@ Done:
   anywhere in the text; `renderProblem` says why. The two MySQL
   profiles share their queries, since they check templates with the
   same lexer, which refuses text the two modes read differently.
-  `render` keeps its dialect argument for the
-  [common dialect](#the-common-dialect), whose queries will render for
-  every database; for now they render only for `Dialect.common`, as
-  written. Where a hole meets
+  A [common query](#the-common-dialect) renders for each of its
+  targets, and for `Dialect.common` as canonical common SQL;
+  `renderedParts(dialect)` gives the parts it renders as, for code
+  that builds on them. Where a hole meets
   text it could merge with (`5-` and `-1`, `a` and `$1`, or two quoted
   names), rendering adds a space.
 - `QueryBuilder(dialect)`: makes a query from plain code, checking its
   text with that dialect's lexing rules: `appendSafe` for trusted SQL
   text, `append` overloads for values, `SqlValue`, `Identifier`, and
-  `Query` (of the same dialect, as for rendering), and `build`, which
+  `Query` (of the same dialect, as for rendering, or a common query,
+  rendered for the builder's database), and `build`, which
   bubbles on a mistake, with `templateProblem` saying why.
 - The `sqlite`, `postgres`, `mysql`, and `duckdb` tags (`SqliteTag`,
   `PostgresTag`, `MysqlTag`, and `DuckdbTag`): `postgres"SELECT * FROM
@@ -204,12 +209,13 @@ Done:
   and `QueryBuilder` lex, parse, and check the whole statement (below),
   refusing anything outside the subset or read differently by a target
   database, with the line, column, and an excerpt. A builder can
-  narrow its `targets`. Common queries nest in common templates where
-  a subquery goes, and render only for `Dialect.common`, canonically,
-  until rendering for each database lands.
+  narrow its `targets`, which the query records. Common queries nest in
+  common templates where a subquery goes, and in a database's template
+  rendered for it, and render for each target database, as
+  [below](#rendering-per-dialect).
 
-Next: the rest of the [common dialect](#the-common-dialect): rendering
-for each database, and the rest of the check stage.
+Next: the rest of the [common dialect](#the-common-dialect)'s check
+stage.
 
 Also planned:
 
@@ -224,8 +230,9 @@ Also planned:
 ## The common dialect
 
 Status: designed (2026-11-07), with its open questions decided
-(2026-11-09, under [Decided](#decided)). Built: chunks 1 to 3 of the
-[plan](#plan): the lexer and tag, expressions, and statements.
+(2026-11-09, under [Decided](#decided)). Built: chunks 1 to 4 of the
+[plan](#plan): the lexer and tag, expressions, statements, and
+rendering for each database.
 
 One query, written once, rendered for each database:
 
@@ -313,9 +320,8 @@ common query renders for every profile:
   writes canonical common SQL, for logs and tests. `renderProblem`
   gives the check's message.
 - **Targets.** A builder checks for every profile by default, or
-  fewer, set with `targets` (built). A query will record the dialects
-  it was checked for, with rendering per database; rendering for
-  another dialect checks again, and bubbles on a problem.
+  fewer, set with `targets`. The query records them, and renders only
+  for them; rendering for another database bubbles.
 - **Builder.** `new QueryBuilder(Dialect.common)` takes the same
   `appendSafe` and `append` calls, and `build` parses and checks,
   bubbling with `templateProblem`; the tag panics, as other tags do.
@@ -331,7 +337,7 @@ common query renders for every profile:
   its own tokens, so the outer query's checks see into it and check it
   again for the outer query's targets; problems there are placed at
   its hole. A common query nested in a database's template
-  (`postgres"… ${q}"`) will be rendered for that database and go in as
+  (`postgres"… ${q}"`) is rendered for that database and goes in as
   parts: an escape hatch for features outside the subset. A database's
   query can't nest in a common template, since it has no tree.
 
@@ -499,38 +505,45 @@ targets also: the `UPDATE … SET` trap, a subquery reading the table an
 `UPDATE`, `DELETE`, or `INSERT … VALUES` changes, `LIMIT` in an `IN`
 subquery, and `*` beside other items.
 
-Narrower targets relax only the checks for the dialects left out: so
-far the lexer's string and name checks and the MySQL statement checks;
-the expression checks still apply to every target.
+Narrower targets relax the checks for the dialects left out: the
+lexer's string and name checks, the MySQL statement checks, and the
+expression checks there because databases differ, when the targets
+left read the construct alike (each check has a letter per profile;
+`src/common-expressions.temper.md` lists them). The traps (`NULL` that
+never matches, `ESCAPE` misused, aggregates in aggregates) apply to
+every target, and so, for now, do the other statement checks.
 The default set is every profile now; a new database (SQL Server,
 say) joins it only in a major version, so an upgrade can't make
 working queries fail.
 
 ### Rendering per dialect
 
-One renderer walks the tree, asking a small private table per target
-for the pieces that differ. It writes parentheses around every operand
-that is itself an operator expression (outside `AND` and `OR` chains),
-since precedence differs: SQLite reads `'a' || 1 + 2` as `('a' || 1) +
-2`, PostgreSQL and DuckDB as `'a' || (1 + 2)`. That also means it
-never writes `--` from a minus before a negative number. Both MySQL
-profiles render the same, except for string literals, each quoted by
-its own profile.
+Built (`src/common-rendering.temper.md`). One renderer walks the tree,
+asking a small private table per target for the pieces that differ. It
+writes parentheses around every operand that is itself an operator
+expression (outside `AND` and `OR` chains), since precedence differs:
+SQLite reads `'a' || 1 + 2` as `('a' || 1) + 2`, PostgreSQL and DuckDB
+as `'a' || (1 + 2)`, and MySQL's `NOT` binds tighter with
+`HIGH_NOT_PRECEDENCE`. That also means it never writes `--` from a
+minus before a negative number. Both MySQL profiles render the same,
+except for string literals, each quoted by its own profile. Each
+rendering then goes through that database's own lexer, as its tag
+would check it, so a value can't land in a quote or comment.
 
 | Common | SQLite | PostgreSQL | MySQL and MariaDB | DuckDB | Approach |
 | --- | --- | --- | --- | --- | --- |
 | `name` (bare) | `"name"` | `"name"` | `` `name` `` | `"name"` | Bare names lowercase, all quoted |
 | `TRUE`, `FALSE` | `TRUE`, `FALSE` (1 and 0, from 3.23) | same | same (1 and 0) | same | Same text; results differ, documented |
-| `a \|\| b` | `a \|\| b` | `a \|\| b` | `CONCAT(a, b)` | `a \|\| b` | Emulate: MySQL's `\|\|` is `OR` without `PIPES_AS_CONCAT`; `CONCAT` gives `NULL` on any `NULL`, as `\|\|` does |
+| `a \|\| b` | `a \|\| b` | `a \|\| b`, values cast to `TEXT`, and `a` too if neither is text | `CONCAT(a, b)` | `a \|\| b` | Emulate: MySQL's `\|\|` is `OR` without `PIPES_AS_CONCAT`, and PostgreSQL has no `\|\|` for two numbers; `CONCAT` gives `NULL` on any `NULL`, as `\|\|` does |
 | `LIMIT n OFFSET m` | same | same | same | same | Same |
-| `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` | Emulate, as each manual says |
-| Default `NULL` order | smallest | largest | smallest | last, both directions | Common: smallest; write `NULLS` where it differs |
-| `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x` | `NULLS` only where the default differs; on MySQL, which lacks it, emulate, repeating `x` and its parameters |
-| `CAST(x AS INTEGER)` | `INTEGER` | `BIGINT` | `SIGNED` | `BIGINT` | Type names map; float to integer truncates in SQLite and rounds in the others, and bad text gives 0 in SQLite and MySQL but fails in the others: documented |
+| `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` (refuses `LIMIT -1`) | Emulate, as each manual says |
+| Default `NULL` order | smallest | largest | smallest | last, both directions, unless `default_null_order` says otherwise | Common: smallest |
+| `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x NULLS LAST` | `NULLS` where the default differs, and always for DuckDB, whose default is a setting; MySQL, which lacks it, sorts by `x IS NULL` first, repeating `x` and its values (for a place or an alias, its item) |
+| `CAST(x AS INTEGER)` | `INTEGER` | `BIGINT` | `SIGNED` | `BIGINT` | Type names map; float to integer truncates in SQLite and rounds in the others, and text reads as its leading number in SQLite and MySQL (`'12abc'` is 12, `'Al'` is 0) but fails in the others: documented |
 | `CAST(x AS DOUBLE)` | `REAL` | `DOUBLE PRECISION` | `DOUBLE` (MySQL 8.0.17) | `DOUBLE` | Map |
 | `CAST(x AS TEXT)` | `TEXT` | `TEXT` | `CHAR` | `VARCHAR` | Map |
 | `LIKE p ESCAPE '!'` | same | same | same | same | Same; refuse `\` and `'` as the escape (MySQL's backslash mode) |
-| `LIKE p`, no `ESCAPE` | no escape | `\` escapes | `\` escapes | no escape | Allow only a literal pattern without `\` |
+| `LIKE p`, no `ESCAPE` | no escape | `\` escapes | `\` escapes (none under `NO_BACKSLASH_ESCAPES`) | no escape | Allow only a literal pattern without `\` |
 | `LIKE` case | ASCII-insensitive | sensitive | per collation, usually insensitive | sensitive | Document |
 | `7 / 2` | 3 | 3 | 3.5000 | 3.5 | Refuse without a known float operand; integer division later as a function |
 | `x / 0` | `NULL` | error | `NULL` (error in strict-mode writes) | `inf`; `%` fails | Document |
@@ -540,11 +553,12 @@ its own profile.
 | Comparison results | 1 and 0 | `true` and `false` | 1 and 0 | `true` and `false` | Document; adapters may convert |
 | `1.5` | a float | exact `numeric` | exact `DECIMAL` | exact `DECIMAL` | Document |
 | `AVG` of integers | float | `numeric` | `DECIMAL` | `DOUBLE` | Document |
-| A `$1` with no context | n/a | may fail: type unknown | n/a | n/a | Write a cast from the value's type, only there |
+| `SUM` of integers | integer | `numeric` | `DECIMAL` | `HUGEINT` (128 bits) | Document |
+| A `$1` with no context | n/a | may fail: type unknown | n/a | n/a | Cast to the value's type alone in a `SELECT` list, and among `CASE` results or `COALESCE` or `NULLIF` arguments when nothing else there has a type |
 | Subquery in `FROM` | alias optional | required before 16 | required | optional | Grammar requires an alias |
 
 Sources (to recheck, since the container's firewall blocked the
-manuals this round): SQLite's [`SELECT`](https://www.sqlite.org/lang_select.html),
+manuals when this was written): SQLite's [`SELECT`](https://www.sqlite.org/lang_select.html),
 [expressions](https://www.sqlite.org/lang_expr.html), and
 [datatypes](https://www.sqlite.org/datatype3.html); PostgreSQL's
 [lexical structure](https://www.postgresql.org/docs/current/sql-syntax-lexical.html)
@@ -567,10 +581,26 @@ MariaDB's [`CAST`](https://mariadb.com/kb/en/cast/) and
 [pattern matching](https://duckdb.org/docs/current/sql/functions/pattern_matching),
 [numeric functions](https://duckdb.org/docs/current/sql/functions/numeric),
 and [casting](https://duckdb.org/docs/current/sql/expressions/cast).
-The SQLite and DuckDB columns were also checked on SQLite 3.45.1 and
-DuckDB 2.0.0; the PostgreSQL and MySQL ones come from their manuals,
-and the engine tests must confirm each before the renderer relies on
-it.
+The engine corpus (`tests/engines/common_corpus.py`, under
+[Testing](#testing)) pins the rows: it runs on SQLite 3.45.1 and
+DuckDB 2.0.0 locally and in CI's `py` job, and on PostgreSQL 18 and
+MariaDB 11.8 in its `engines` job, so the PostgreSQL and MySQL columns,
+from the manuals, are confirmed there. Checked on SQLite and DuckDB
+(2026-11-09):
+
+- **Confirmed:** `OFFSET` alone (and DuckDB refuses `LIMIT -1`), the
+  default `NULL` orders (DuckDB's last in both directions), `NULLS
+  FIRST` and `LAST`, the cast type names, `||` on numbers (`1 || 2` is
+  `'12'` in both), `LIKE`'s case, `7 / 2`, `x / 0` (and `%` by zero
+  failing in DuckDB), float to integer (SQLite truncates, DuckDB rounds
+  half away from zero), `LOWER` past ASCII, comparison results, `1.5`'s
+  type, and `AVG`'s.
+- **Corrected:** SQLite reads text cast to `INTEGER` as its leading
+  number (`'12abc'` is 12), not 0; DuckDB's `NULL` order is a setting,
+  so rendering always writes `NULLS` for it; DuckDB's `SUM` of integers
+  is a 128-bit `HUGEINT`; and `SUBSTR` with a start below 1 or a
+  negative length reads the same in SQLite and DuckDB, so that check
+  applies only beside PostgreSQL or MySQL.
 
 Empty strings and `NULL` are distinct on all four; Oracle, later,
 differs. Prior art compiles one tree per dialect the same way (SQLGlot,
@@ -588,10 +618,12 @@ of ideas only); Wherewith copies none of their code or tables.
   in `tests/engines/` against a fixture table with `NULL`s, negative
   numbers, mixed case, trailing spaces, and non-ASCII text, on SQLite
   and DuckDB in the `py` job and PostgreSQL and MariaDB in the
-  `engines` job, plus a MySQL 8.4 service container. Results are
-  normalized (booleans to integers, decimals to floats) and must
+  `engines` job, plus a MySQL 8.4 service container (next). Results
+  are normalized (booleans to integers, decimals to floats) and must
   match across engines; documented differences are asserted to still
-  differ, so the table above can't go stale.
+  differ, so the table above can't go stale. Built: the corpus in
+  `common_corpus.py`, which each runner runs, with random queries
+  rendered for the engine and checked against SQLite.
 - **Fuzzing,** seeded in CI and longer locally: a grammar-based
   generator makes random subset queries that must parse, print back
   canonically to the same tree, render for each target, be accepted
@@ -614,12 +646,15 @@ Each chunk is one commit, tested on every backend:
    and `DELETE`, subqueries in place or as holes, nesting, builder
    targets, and the checks a statement shows. The tag parses and
    checks at construction, and common queries render canonically.
-4. **Rendering** (medium to large, ~800): every profile, with the
-   table above, and the per-database lexer oracle.
+4. **Rendering** (done, 2026-11-09): every profile, with the table
+   above, the per-database lexer oracle, recorded targets that relax
+   the expression checks, and the engine corpus, checked on SQLite and
+   DuckDB.
 5. **Check stage** (medium, ~500): every rule above, at construction
    and at render.
-6. **Engines** (medium, ~500 lines of Python): the shared corpus on
-   all engines, and a MySQL service in CI.
+6. **Engines** (medium): the rest of the rules from manuals confirmed
+   on PostgreSQL and MariaDB in CI, a MySQL service, and the statement
+   rules' corpus.
 7. **Fuzzing** (small to medium): the generator and mutations.
 8. **Docs** (small): the README, the site, and the demos lead with the
    common dialect.
@@ -795,6 +830,12 @@ tests below.
     DuckDB's default of a thread per core reserves much memory.
   - **MySQL itself, later:** a MySQL service container, with the
     MariaDB runner's checks.
+  - **The common corpus (done):** each runner, in each setting, also
+    runs `common_corpus.py`: common queries rendered for its engine,
+    on a fixture filled by a rendered `INSERT`, giving the same rows
+    everywhere but where the [rendering table](#rendering-per-dialect)
+    documents a difference, which must still differ; writes read back;
+    and random queries, checked against SQLite.
   - Later, binding parameters through each language's drivers above.
 
 ## Open questions
@@ -880,7 +921,9 @@ closest to standard SQL.
     project still supports, MySQL 8.0.17, MariaDB 10.6, and DuckDB
     1.0, each tested on current releases. MySQL 8.0 and MariaDB 10.6
     are past their end of life, but staying compatible costs little.
-12. **Rendering before the renderer:** a common query renders only for
-    `Dialect.common`, canonically from its tree, and `render` bubbles
-    for every database ("isn't built yet") until the renderer lands,
-    rather than passing text through where it happens to be exact.
+12. **Rendering before the renderer:** until the renderer landed (chunk
+    4), a common query rendered only for `Dialect.common`, rather than
+    passing text through where it happened to be exact.
+13. **Rendering only for targets:** a common query records the targets
+    it was checked for, and renders only for them; narrower targets
+    relax the checks for constructs those targets read alike.

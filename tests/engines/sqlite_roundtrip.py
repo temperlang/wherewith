@@ -26,6 +26,9 @@ from roundtrip import H, Style
 
 
 class Sqlite(rt.Engine):
+    corpus_name = "sqlite"
+    corpus_types = {"int": "INTEGER", "text": "TEXT", "float": "REAL", "bool": "BOOLEAN"}
+
     def __init__(self) -> None:
         ww = rt.ww
         self.dialect = ww.Dialect.sqlite

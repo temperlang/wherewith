@@ -80,8 +80,8 @@ names `Identifier` takes.
 ## The tag
 
 A common query keeps its values as parameters, and renders for
-`Dialect.common` canonically, with names bare where they can be.
-Rendering for each database comes next.
+`Dialect.common` canonically, with names bare where they can be, and
+for each database with every name quoted its way.
 
     test("the sql tag") {
       let users = Identifier.named("users") orelse panic();
@@ -95,9 +95,9 @@ Rendering for each database comes next.
       assert(render(q, Dialect.common, PlaceholderStyle.dollarNumbered) ==
         "SELECT id FROM users WHERE name = $1 AND age > $2");
       for (let d of allDialects()) {
-        assert(render(q, d, PlaceholderStyle.question) == "(fails)");
-        assert(q.renderProblem(d, PlaceholderStyle.question) ==
-          "rendering a common query for ${d.name} isn't built yet");
+        let id = d.quoteName("id") orelse panic();
+        assert(render(q, d, PlaceholderStyle.question) ==
+          "SELECT ${id} FROM ${nam(d, "users")} WHERE ${nam(d, "name")} = ? AND ${nam(d, "age")} > ?");
       }
       let other = sqlite"SELECT 1";
       assert(other.renderProblem(Dialect.common, PlaceholderStyle.question) ==
@@ -380,5 +380,20 @@ now.
         b.appendQuery(inner);
         b.appendSafe(")");
       };
-      assert(into == "nested query checked for common, not postgres");
+      assert(into == "ok");
+      // In a database's template, a common query goes in rendered for it.
+      let pgOuter = postgres"SELECT a FROM t WHERE a IN (${inner}) AND b = ${4}";
+      assert(render(pgOuter, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT a FROM t WHERE a IN (SELECT \"b\" FROM \"u\" WHERE \"c\" = $1) AND b = $2");
+      assert(pgOuter.params.length == 2);
+      let pgOnly = new QueryBuilder(Dialect.common);
+      pgOnly.targets = [Dialect.postgres];
+      pgOnly.appendSafe("SELECT 1 AS one");
+      let narrow = pgOnly.build() orelse panic();
+      let wrong = checkTemplate(Dialect.mysql) { b =>
+        b.appendSafe("SELECT (");
+        b.appendQuery(narrow);
+        b.appendSafe(")");
+      };
+      assert(wrong == "nested common query: common query checked for postgres, not mysql");
     }

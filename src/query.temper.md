@@ -35,7 +35,8 @@ in place, so its parameters are numbered with the rest.
 
 `dialect` is the dialect whose lexing rules checked the text, and
 `params` lists the values in order, the same for every placeholder
-style. Queries come from a `QueryBuilder` or a tag, which check their
+style. `targets` are the databases a common query was checked for, and
+renders for; a database's query has just its own dialect. Queries come from a `QueryBuilder` or a tag, which check their
 text; the constructor is private. It keeps its own copy of the parts
 (free when they're already a `List`), so a caller that goes on
 changing its list can't make the parts and `params` disagree.
@@ -47,21 +48,20 @@ parts when it's made, since rendering writes from the tree.
       public dialect: Dialect;
       public parts: List<QueryPart>;
       public params: List<SqlValue>;
+      public targets: List<Dialect>;
       private common: CommonQuery?;
 
-      private constructor(dialect: Dialect, parts: Listed<QueryPart>) {
+      private constructor(dialect: Dialect, parts: Listed<QueryPart>, targets: List<Dialect>) {
         let own = parts.toList();
         let params = new ListBuilder<SqlValue>();
-        // An index loop, since Temper's C++ backend drops the lambda's
-        // declaration for a for-of loop in a constructor.
-        for (var i = 0; i < own.length; i += 1) {
-          let part = own[i];
+        for (let part of own) {
           if (part is QueryParam) { params.add(part.value); }
         }
         let common = if (dialect.name == "common") { parsedCommon(own) } else { null };
         this.dialect = dialect;
         this.parts = own;
         this.params = params.toList();
+        this.targets = targets;
         this.common = common;
       }
 
@@ -73,14 +73,16 @@ as another builder that already lexes SQL. Use a `QueryBuilder` or a
 tag otherwise. It takes any list of parts, even a `ListBuilder` still
 being added to, and the query keeps its own copy. For the common
 dialect it parses the parts, without the checks; a query whose parts
-don't parse can't render.
+don't parse can't render. A common query's `targets` are those given,
+or else every database.
 
 Temper's private constructors still come out public in some backends
 (a known limitation, for now), so there `new Query(dialect, parts)` is
 callable too, with the same danger; use `unchecked`, which says so.
 
-      public static unchecked(dialect: Dialect, parts: Listed<QueryPart>): Query {
-        new Query(dialect, parts)
+      public static unchecked(dialect: Dialect, parts: Listed<QueryPart>, targets: List<Dialect>? = null): Query {
+        let own = if (dialect.name != "common") { [dialect] } else { targets ?? commonTargets() };
+        new Query(dialect, parts, own)
       }
 
 ### Rendering
@@ -92,25 +94,28 @@ run together into one token, such as `5-` and `-1` into a comment, or
 line breaks, and the punctuation `(`, `)`, `[`, `]`, `,`, and `;`
 (and `.` beside a quoted name) touch a hole directly.
 
-A common query renders as canonical common SQL, written from its tree:
-keywords in capitals, names bare where they can be and quoted
-otherwise, and comments gone.
+A common query renders from its tree. For `Dialect.common`, that's
+canonical common SQL: keywords in capitals, names bare where they can
+be and quoted otherwise, and comments gone. For each database it was
+checked for (its `targets`), it's that database's SQL, written as the
+[rendering rules](common-rendering.temper.md) say, and then checked
+with that database's own lexer, as its tag would check it, so a value
+can't land in a quote or comment there.
 
 Rendering bubbles if `renderProblem` finds a problem: a dialect other
-than the query's, or a named style whose marker is in the text.
+than the query's, or than a common query's targets, or a named style
+whose marker is in the text.
 
       public render(dialect: Dialect, style: PlaceholderStyle): RenderedQuery throws Bubble {
-        if (renderProblem(dialect, style) != null) { bubble() }
-        let common = this.common;
-        if (common != null) {
-          let written = common.rendered();
-          let values = new ListBuilder<SqlValue>();
-          for (let part of written) {
-            if (part is QueryParam) { values.add(part.value); }
-          }
-          return joined(written, values.toList(), dialect, style);
+        let w = written(dialect, style);
+        if (w.problem != null) { bubble() }
+        let parts = w.parts;
+        if (common == null) { return joined(parts, params, dialect, style); }
+        let values = new ListBuilder<SqlValue>();
+        for (let part of parts) {
+          if (part is QueryParam) { values.add(part.value); }
         }
-        joined(parts, params, dialect, style)
+        joined(parts, values.toList(), dialect, style)
       }
 
       private joined(
@@ -149,28 +154,52 @@ differently in another: in `postgres"SELECT 1 # ${x}"`, `#` is an
 operator to PostgreSQL, but starts a comment in MySQL, hiding the
 parameter. A query for `mysql` renders for `mysqlNoBackslashEscapes`
 too, and the other way around, since both check templates with the
-same lexer, which refuses text the two modes read differently.
-
-A common query renders, for now, only for `Dialect.common`; rendering
-it for each database is next.
+same lexer, which refuses text the two modes read differently. A
+common query renders for `Dialect.common` and for its targets.
 
 A named style's marker (`@` or `:`) can't be anywhere in the query's
 text, even inside quotes, since a driver that looks for names could
 misread it.
 
       public renderProblem(dialect: Dialect, style: PlaceholderStyle): String? {
-        if (this.dialect.name == "common" && dialect.name != "common") {
-          return "rendering a common query for ${dialect.name} isn't built yet";
-        }
-        if (!sameLexing(this.dialect, dialect)) {
-          return "query checked for ${this.dialect.name}, not ${dialect.name}";
-        }
+        written(dialect, style).problem
+      }
+
+`renderedParts` gives the parts a query renders as for a dialect: for a
+common query, its tree written for that database, with names in the
+text; for others, its own parts. It bubbles as `render` does.
+
+      public renderedParts(dialect: Dialect): List<QueryPart> throws Bubble {
+        let w = written(dialect, PlaceholderStyle.question);
+        if (w.problem != null) { bubble() }
+        w.parts
+      }
+
+`written` gives the parts to render for a dialect, or the problem.
+
+      private written(dialect: Dialect, style: PlaceholderStyle): WrittenQuery {
         var written = parts;
         let common = this.common;
-        if (common != null) {
-          let found = common.problem;
-          if (found != null) { return "common query doesn't parse: ${found}"; }
-          written = common.rendered();
+        let database = if (dialect.name != "common") { common } else { null };
+        if (database != null) {
+          if (!hasDialect(targets, dialect)) {
+            return new WrittenQuery(parts, "common query checked for ${dialectNames(targets)}, not ${dialect.name}");
+          }
+          let found = database.problem;
+          if (found != null) { return new WrittenQuery(parts, "common query doesn't parse: ${found}"); }
+          let rendered = database.renderedFor(dialect);
+          let problem = rendered.problem ?? lexingProblem(dialect, rendered.parts);
+          if (problem != null) { return new WrittenQuery(parts, problem); }
+          written = rendered.parts;
+        } else {
+          if (!sameLexing(this.dialect, dialect)) {
+            return new WrittenQuery(parts, "query checked for ${this.dialect.name}, not ${dialect.name}");
+          }
+          if (common != null) {
+            let found = common.problem;
+            if (found != null) { return new WrittenQuery(parts, "common query doesn't parse: ${found}"); }
+            written = common.renderedFor(dialect).parts;
+          }
         }
         let marker = style.marker;
         if (marker != 0) {
@@ -178,12 +207,47 @@ misread it.
             let part = written[i];
             if (part is QueryText && hasCodePoint(part.text, marker)) {
               let shown = if (marker == char'@') { "@" } else { ":" };
-              return "text has ${shown}, which ${style.name} uses";
+              return new WrittenQuery(written, "text has ${shown}, which ${style.name} uses");
             }
           }
         }
-        null
+        new WrittenQuery(written, null)
       }
+    }
+
+`WrittenQuery` holds the parts a query renders as, or why it can't.
+
+    class WrittenQuery(public parts: List<QueryPart>, public problem: String?) {}
+
+`lexingProblem` checks a common query's parts, as written for a
+database, with that database's lexer, as a `QueryBuilder` for it would.
+It should never find one; if it does, rendering refuses rather than
+send SQL the database could read differently.
+
+    let lexingProblem(dialect: Dialect, parts: List<QueryPart>): String? {
+      let b = new QueryBuilder(dialect);
+      for (let part of parts) {
+        when (part) {
+          is QueryText -> b.appendSafe(part.text);
+          is QueryParam -> b.appendValue(part.value);
+          is QueryName -> b.appendIdentifier(part.name);
+          else -> do {};
+        }
+      }
+      let built: Query? = b.build() orelse null;
+      if (built != null) { return null; }
+      "common query rendered for ${dialect.name} fails its lexer: ${b.templateProblem ?? ""}"
+    }
+
+    let hasDialect(dialects: List<Dialect>, dialect: Dialect): Boolean {
+      for (let d of dialects) {
+        if (d.name == dialect.name) { return true; }
+      }
+      false
+    }
+
+    let dialectNames(dialects: List<Dialect>): String {
+      dialects.join(", ", fn (d: Dialect): String { d.name })
     }
 
 `RenderedQuery` is what a driver takes: the SQL text and the values to
@@ -276,7 +340,9 @@ mistake can't misplace a parameter:
   comment there.
 - A nested query must be for a dialect the builder's checks cover, as
   for rendering, since its text was checked with its own dialect's
-  rules.
+  rules. A common query goes into a database's template rendered for
+  that database, so it must be one of its targets: an escape hatch for
+  SQL outside the common dialect.
 - The text can't end inside a quote or a block comment. If it ends in
   a line comment, a line break ends that, so text after a nested query
   stays code.
@@ -291,7 +357,8 @@ checks it for each target database: every profile by default, or
 fewer, set with `targets` any time before `build`. A nested common
 query's own text is lexed, parsed, and checked again, as part of the
 template, so the checks see into it, and it needs to suit only the
-outer query's targets.
+outer query's targets. The query records its targets, and renders only
+for them.
 
 ```temper inert
 let b = new QueryBuilder(Dialect.mysql);
@@ -342,8 +409,8 @@ which MySQL's default profile reads as an escape, is fine for
         } else if (value.isEmpty) {
           fail("no target databases");
         } else {
-          for (var i = 0; i < value.length; i += 1) {
-            if (value[i].name == "common") {
+          for (let d of value) {
+            if (d.name == "common") {
               fail("common isn't a target database");
               return;
             }
@@ -384,13 +451,28 @@ which MySQL's default profile reads as an escape, is fine for
       @overload("append")
       public appendQuery(x: Query): Void {
         flush();
+        let common = this.common;
+        if (common != null) {
+          if (x.dialect.name != "common") {
+            fail(lexer.locate("nested query checked for ${x.dialect.name}, not common"));
+          }
+          nest(common, x);
+          return;
+        }
+        if (x.dialect.name == "common") {
+          // Written for this dialect, and checked with its lexer.
+          let rendered: List<QueryPart>? = x.renderedParts(dialect) orelse null;
+          if (rendered == null) {
+            fail(lexer.locate("nested common query: ${x.renderProblem(dialect, PlaceholderStyle.question) ?? ""}"));
+          } else if (hole(holeQuery)) {
+            for (let p of rendered) { parts.add(p); }
+          }
+          return;
+        }
         if (!sameLexing(x.dialect, dialect)) {
           fail(lexer.locate("nested query checked for ${x.dialect.name}, not ${dialect.name}"));
         }
-        let common = this.common;
-        if (common != null) {
-          nest(common, x);
-        } else if (hole(holeQuery)) {
+        if (hole(holeQuery)) {
           for (let p of x.parts) { parts.add(p); }
         }
       }
@@ -406,17 +488,21 @@ start and end.
         if (x.dialect.name != "common") { return; }
         common.beginQuery();
         for (let p of x.parts) {
-          if (p is QueryText) {
-            let found = common.scan(p.text);
-            if (found != null) { fail(found); }
-          } else if (p is QueryParam) {
-            let found = common.hole(holeValue);
-            if (found != null) { fail(found); }
-            holes.add(p);
-          } else if (p is QueryName) {
-            let found = common.hole(holeName);
-            if (found != null) { fail(found); }
-            holes.add(p);
+          when (p) {
+            is QueryText -> do {
+              let found = common.scan(p.text);
+              if (found != null) { fail(found); }
+            };
+            is QueryParam -> do {
+              let found = common.hole(holeValue);
+              if (found != null) { fail(found); }
+              holes.add(p);
+            };
+            is QueryName -> do {
+              let found = common.hole(holeName);
+              if (found != null) { fail(found); }
+              holes.add(p);
+            };
           }
           parts.add(p);
         }
@@ -445,7 +531,7 @@ start and end.
           }
         }
         if (problem != null) { bubble() }
-        Query.unchecked(dialect, parts)
+        Query.unchecked(dialect, parts, targetList)
       }
 
       public get accumulated(): Query { build() orelse panic() }

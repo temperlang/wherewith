@@ -39,6 +39,8 @@ SCHEMA = "wherewith_roundtrip"
 
 
 class Postgres(rt.Engine):
+    corpus_name = "postgres"
+
     def __init__(self, host: str, port: int) -> None:
         import psycopg  # noqa: PLC0415
 
@@ -268,6 +270,17 @@ class Postgres(rt.Engine):
                 rt.fail("limits", f"{label} was accepted, though text can't hold NUL")
             except (self.psycopg.Error, ValueError) as err:
                 notes.append(f"{label} rejected ({type(err).__name__})")
+        # Why common queries cast a value alone in a SELECT list: psycopg
+        # sends text untyped, as `pg` sends every value, and the server
+        # can't type `SELECT $1` from that alone. The cast must work.
+        for label, sql in [("an untyped value alone", "SELECT %s"), ("a value cast to text", "SELECT CAST(%s AS TEXT)")]:
+            try:
+                got = self.execute(sql, ["x"])
+                notes.append(f"{label} gives {got[0][0]!r}")
+            except self.psycopg.Error as err:
+                notes.append(f"{label} fails ({type(err).__name__})")
+                if "CAST" in sql:
+                    rt.fail("limits", f"{label} failed: {err}")
         rt.count("limits checked", len(notes))
         print("  limits: " + "; ".join(notes))
 

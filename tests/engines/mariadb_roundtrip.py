@@ -48,6 +48,10 @@ class Mariadb(rt.Engine):
     # bound; the sign of a zero isn't checked.
     exact_floats = False
     table_options = f" {CHARSET}"
+    corpus_name = "mariadb"
+    corpus_types = {"int": "BIGINT", "text": "VARCHAR(100)", "float": "DOUBLE", "bool": "BOOLEAN"}
+    # The server's default collation, which the corpus documents.
+    corpus_options = " DEFAULT CHARSET=utf8mb4"
 
     def __init__(self, conn, mode: str, extra: list[str], dialect) -> None:
         self.conn = conn

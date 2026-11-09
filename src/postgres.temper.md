@@ -109,15 +109,11 @@ is the same but for backtick names and a pass over Unicode spaces.
             problem = problem ?? duckdbSpaceProblem(text, i, c);
           }
           if (state == lexCode && afterEscape >= 0 && !(c == char'-' && following == char'-')) {
-            // Flat conditions: Temper's C# backend drops the braces of
-            // an `if` alone in an `else if` branch, so a later `else`
-            // would bind to it.
-            let space = isSpace(c);
             if (c == char'\n' || c == char'\r') {
               afterEscape = 2;
-            } else if (space && afterEscape == 0) {
-              afterEscape = 1;
-            } else if (!space && (c != char'\'' || afterEscape == 1)) {
+            } else if (isSpace(c)) {
+              if (afterEscape == 0) { afterEscape = 1; }
+            } else if (c != char'\'' || afterEscape == 1) {
               afterEscape = -1;
             }
           }

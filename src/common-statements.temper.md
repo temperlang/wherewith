@@ -404,13 +404,13 @@ A join, if one is next.
         expectKeyword("join");
         let source = fromSource();
         var condition: CommonExpr? = null;
-        // Flat conditions here and below, since Temper's C# backend can
-        // attach an `else` to an inner `if` with no `else` of its own.
-        let on = p.peek();
-        if (kind == joinCross && p.isKeyword(on, "on")) {
-          p.report("CROSS JOIN takes no ON", on);
-          bubble()
-        } else if (kind != joinCross) {
+        if (kind == joinCross) {
+          let on = p.peek();
+          if (p.isKeyword(on, "on")) {
+            p.report("CROSS JOIN takes no ON", on);
+            bubble()
+          }
+        } else {
           expectKeyword("on");
           condition = p.expression();
         }
@@ -431,6 +431,7 @@ A join, if one is next.
         if (p.isKeyword(p.peek(), "nulls")) {
           p.advance();
           let w = p.peek();
+          // Nested, since Temper doesn't narrow through `&&` into a branch.
           var word = "";
           if (w != null) {
             if (w.kind == tokenWord) { word = w.word; }
@@ -613,6 +614,19 @@ for words saved for constructs planned later.
       private larger(a: Int, b: Int): Int { if (a > b) { a } else { b } }
     }
 
+`integerValue` is an integer literal's value, up to 100000, which no
+column count reaches.
+
+    let integerValue(lexer: CommonLexer, t: CommonToken): Int {
+      let text = lexer.runs[t.run];
+      var n = 0;
+      for (var i = t.begin; i < t.end; i = text.next(i)) {
+        if (n > 100000) { return 100000; }
+        n = n * 10 + (text[i] - char'0');
+      }
+      n
+    }
+
 `counted` writes a count with a noun, plural or not.
 
     let counted(n: Int, noun: String): String {
@@ -676,14 +690,11 @@ which holds the holes and targets.
     class StatementChecker(private c: CommonChecker) {
 
       public statement(s: CommonStatement): Void throws Bubble {
-        if (s is SelectStatement) {
-          select(s);
-        } else if (s is InsertStatement) {
-          insert(s);
-        } else if (s is UpdateStatement) {
-          update(s);
-        } else if (s is DeleteStatement) {
-          deleteFrom(s);
+        when (s) {
+          is SelectStatement -> do { select(s); };
+          is InsertStatement -> insert(s);
+          is UpdateStatement -> update(s);
+          is DeleteStatement -> deleteFrom(s);
         }
       }
 
@@ -708,12 +719,10 @@ gives its kind: its one column's, or unknown. `inSubquery` adds what
 
 ### SELECT
 
-      // Index loops here, since their bodies can bubble.
       private select(s: SelectStatement): Int throws Bubble {
         let items = s.items;
         var kind = kindUnknown;
-        for (var i = 0; i < items.length; i += 1) {
-          let item = items[i];
+        for (let item of items) {
           let e = item.expr;
           if (e != null) {
             let k = c.check(e);
@@ -726,16 +735,16 @@ gives its kind: its one column's, or unknown. `inSubquery` adds what
         let filter = s.filter;
         if (filter != null) { c.condition(c.check(filter), filter); }
         let groups = s.groups;
-        for (var i = 0; i < groups.length; i += 1) {
-          c.check(groups[i]);
-          constant(groups[i], "GROUP BY");
+        for (let g of groups) {
+          c.check(g);
+          constant(g, "GROUP BY");
         }
         let having = s.having;
         if (having != null) { c.condition(c.check(having), having); }
         let orders = s.orders;
-        for (var i = 0; i < orders.length; i += 1) {
-          c.check(orders[i].expr);
-          constant(orders[i].expr, "ORDER BY");
+        for (let o of orders) {
+          c.check(o.expr);
+          constant(o.expr, "ORDER BY");
         }
         count(s.limit, "LIMIT");
         count(s.offset, "OFFSET");
@@ -753,7 +762,7 @@ only tables joined before it.
         let first = s.source;
         if (first != null) { source(first, names); }
         let joins = s.joins;
-        for (var i = 0; i < joins.length; i += 1) { source(joins[i].source, names); }
+        for (let join of joins) { source(join.source, names); }
         for (var i = 0; i < joins.length; i += 1) {
           let condition = joins[i].condition;
           if (condition != null) {
@@ -765,10 +774,9 @@ only tables joined before it.
 
       private source(s: CommonSource, names: ListBuilder<String>): Void throws Bubble {
         var named = s.alias;
-        if (s is QuerySource) {
-          c.check(s.query);
-        } else if (s is TableSource) {
-          named = named ?? s.table.name;
+        when (s) {
+          is QuerySource -> c.check(s.query);
+          is TableSource -> named = named ?? s.table.name;
         }
         let n = named;
         if (n != null) {
@@ -796,7 +804,7 @@ only tables joined before it.
           return;
         }
         let children = exprChildren(e);
-        for (var i = 0; i < children.length; i += 1) { joinedLater(children[i], names, from); }
+        for (let child of children) { joinedLater(child, names, from); }
       }
 
 A constant item in `GROUP BY` or `ORDER BY`, but an integer, which is
@@ -811,8 +819,8 @@ a column's place.
         if (e is ColumnExpr || e is SubqueryExpr) { return false; }
         if (e is CallExpr && CallExpr.isAggregate(e.callee)) { return false; }
         let children = exprChildren(e);
-        for (var i = 0; i < children.length; i += 1) {
-          if (!isConstant(children[i])) { return false; }
+        for (let child of children) {
+          if (!isConstant(child)) { return false; }
         }
         true
       }
@@ -840,27 +848,27 @@ either.
         let items = s.items;
         // Each alias that names something else, folded.
         let others = new ListBuilder<String>();
-        for (var i = 0; i < items.length; i += 1) {
-          let alias = items[i].alias;
+        for (let item of items) {
+          let alias = item.alias;
           if (alias != null) {
             let text = c.nameText(alias);
-            if (columnName(items[i].expr) != text) { others.add(folded(text)); }
+            if (columnName(item.expr) != text) { others.add(folded(text)); }
           }
         }
         let filter = s.filter;
         if (filter != null) { aliasRefs(filter, others); }
         let joins = s.joins;
-        for (var i = 0; i < joins.length; i += 1) {
-          let condition = joins[i].condition;
+        for (let join of joins) {
+          let condition = join.condition;
           if (condition != null) { aliasRefs(condition, others); }
         }
         let groups = s.groups;
-        for (var i = 0; i < groups.length; i += 1) { aliasRefs(groups[i], others); }
+        for (let g of groups) { aliasRefs(g, others); }
         let having = s.having;
         if (having != null) { aliasRefs(having, others); }
         let orders = s.orders;
-        for (var i = 0; i < orders.length; i += 1) {
-          let e = orders[i].expr;
+        for (let o of orders) {
+          let e = o.expr;
           if (isBareColumn(e)) {
             orderAlias(s, e);
           } else {
@@ -884,7 +892,7 @@ either.
         }
         if (e is SubqueryExpr) { return; }
         let children = exprChildren(e);
-        for (var i = 0; i < children.length; i += 1) { aliasRefs(children[i], others); }
+        for (let child of children) { aliasRefs(child, others); }
       }
 
 `columnName` is a column's name, without its table, or else "".
@@ -906,8 +914,8 @@ that matches only without regard to case, or matches two, is refused.
         var exact = 0;
         var loose = 0;
         let items = s.items;
-        for (var i = 0; i < items.length; i += 1) {
-          let alias = items[i].alias;
+        for (let item of items) {
+          let alias = item.alias;
           if (alias != null) {
             let a = c.nameText(alias);
             if (a == text) { exact += 1; }
@@ -925,8 +933,8 @@ that matches only without regard to case, or matches two, is refused.
         if (isBareColumn(e)) {
           let text = columnName(e);
           let items = s.items;
-          for (var i = 0; i < items.length; i += 1) {
-            let alias = items[i].alias;
+          for (let item of items) {
+            let alias = item.alias;
             if (alias != null && c.nameText(alias) == text) { return true; }
           }
         }
@@ -942,8 +950,7 @@ item.
         let orders = s.orders;
         let written = s.groups;
         let groups = new ListBuilder<CommonExpr>();
-        for (var i = 0; i < written.length; i += 1) {
-          let g = written[i];
+        for (let g of written) {
           let place = position(g);
           let item = if (place >= 1 && place <= items.length) { items[place - 1].expr } else { null };
           groups.add(item ?? g);
@@ -953,8 +960,8 @@ item.
           let e = items[i].expr;
           if (e != null && hasAggregate(e)) { grouped = true; }
         }
-        for (var i = 0; i < orders.length; i += 1) {
-          if (hasAggregate(orders[i].expr)) { grouped = true; }
+        for (let o of orders) {
+          if (hasAggregate(o.expr)) { grouped = true; }
         }
         if (!grouped) { return; }
         let keys = new ListBuilder<String>();
@@ -969,8 +976,8 @@ item.
         }
         let having = s.having;
         if (having != null) { ungrouped(having, keys, groups); }
-        for (var i = 0; i < orders.length; i += 1) {
-          let e = orders[i].expr;
+        for (let o of orders) {
+          let e = o.expr;
           if (position(e) < 0 && !isOrderAlias(s, e)) { ungrouped(e, keys, groups); }
         }
       }
@@ -978,16 +985,7 @@ item.
 `position` is an integer literal's value, as a column's place, or -1.
 
       private position(e: CommonExpr): Int {
-        if (!(e is LiteralExpr && e.literal == literalInteger)) { return -1; }
-        let t = e.at;
-        let text = c.lexer.runs[t.run];
-        var n = 0;
-        for (var i = t.begin; i < t.end; i = text.next(i)) {
-          // Past any column count, which can't reach this.
-          if (n > 100000) { return 100000; }
-          n = n * 10 + (text[i] - char'0');
-        }
-        n
+        if (e is LiteralExpr && e.literal == literalInteger) { integerValue(c.lexer, e.at) } else { -1 }
       }
 
       private ungrouped(e: CommonExpr, keys: ListBuilder<String>, groups: ListBuilder<CommonExpr>): Void throws Bubble {
@@ -1006,7 +1004,7 @@ item.
           return;
         }
         let children = exprChildren(e);
-        for (var i = 0; i < children.length; i += 1) { ungrouped(children[i], keys, groups); }
+        for (let child of children) { ungrouped(child, keys, groups); }
       }
 
 A column is grouped by if `GROUP BY` names the same column, with the
@@ -1035,8 +1033,8 @@ same table or with a table on only one side.
         if (e is SubqueryExpr) { return false; }
         if (e is CallExpr && CallExpr.isAggregate(e.callee)) { return true; }
         let children = exprChildren(e);
-        for (var i = 0; i < children.length; i += 1) {
-          if (hasAggregate(children[i])) { return true; }
+        for (let child of children) {
+          if (hasAggregate(child)) { return true; }
         }
         false
       }
@@ -1050,12 +1048,12 @@ an item itself, or a column when the items have `*`.
         let items = s.items;
         let keys = new ListBuilder<String>();
         var star = false;
-        for (var i = 0; i < items.length; i += 1) {
-          let e = items[i].expr;
+        for (let item of items) {
+          let e = item.expr;
           if (e != null) { keys.add(key(e)); } else { star = true; }
         }
-        for (var i = 0; i < orders.length; i += 1) {
-          let e = orders[i].expr;
+        for (let o of orders) {
+          let e = o.expr;
           var listed = (e is LiteralExpr && e.literal == literalInteger) || isOrderAlias(s, e) ||
             (star && e is ColumnExpr);
           if (!listed) {
@@ -1075,8 +1073,7 @@ an item itself, or a column when the items have `*`.
       private insert(s: InsertStatement): Void throws Bubble {
         twice(s.columns, "listed");
         let rows = s.rows;
-        for (var i = 0; i < rows.length; i += 1) {
-          let row = rows[i];
+        for (let row of rows) {
           for (var j = 0; j < row.length; j += 1) {
             c.check(row[j]);
             if (mysql()) { reads(row[j], s.table, "INSERT"); }
@@ -1090,7 +1087,7 @@ an item itself, or a column when the items have `*`.
         twice(s.columns, "set");
         let columns = s.columns;
         let values = s.values;
-        for (var i = 0; i < values.length; i += 1) { c.check(values[i]); }
+        for (let value of values) { c.check(value); }
         let filter = s.filter;
         if (filter != null) { c.condition(c.check(filter), filter); }
         if (!mysql()) { return; }
@@ -1142,7 +1139,7 @@ there with no table, or the updated table's, may be that column.
           return;
         }
         let children = deepChildren(e);
-        for (var i = 0; i < children.length; i += 1) { setEarlier(children[i], set, table); }
+        for (let child of children) { setEarlier(child, set, table); }
       }
 
 `reads` refuses a subquery in `e` that reads `table`, however deep.
@@ -1169,15 +1166,15 @@ there with no table, or the updated table's, may be that column.
           }
         }
         let children = deepChildren(e);
-        for (var i = 0; i < children.length; i += 1) { reads(children[i], table, verb); }
+        for (let child of children) { reads(child, table, verb); }
       }
 
 ### Helpers
 
       private mysql(): Boolean {
         let targets = c.targets;
-        for (var i = 0; i < targets.length; i += 1) {
-          if (lexingName(targets[i]) == "mysql") { return true; }
+        for (let d of targets) {
+          if (lexingName(d) == "mysql") { return true; }
         }
         false
       }
@@ -1218,46 +1215,51 @@ sources' subqueries.
 
     let exprChildren(e: CommonExpr): List<CommonExpr> {
       let out = new ListBuilder<CommonExpr>();
-      if (e is ExistsExpr) {
-        out.add(e.query);
-      } else if (e is UnaryExpr) {
-        out.add(e.operand);
-      } else if (e is BinaryExpr) {
-        out.add(e.left);
-        out.add(e.right);
-      } else if (e is ChainExpr) {
-        for (let operand of e.operands) { out.add(operand); }
-      } else if (e is IsNullExpr) {
-        out.add(e.operand);
-      } else if (e is InListExpr) {
-        out.add(e.operand);
-        for (let item of e.items) { out.add(item); }
-      } else if (e is InQueryExpr) {
-        out.add(e.operand);
-        out.add(e.query);
-      } else if (e is BetweenExpr) {
-        out.add(e.operand);
-        out.add(e.low);
-        out.add(e.high);
-      } else if (e is LikeExpr) {
-        out.add(e.operand);
-        out.add(e.pattern);
-      } else if (e is CaseExpr) {
-        let subject = e.subject;
-        if (subject != null) { out.add(subject); }
-        let thens = e.thens;
-        var i = 0;
-        for (let w of e.whens) {
-          out.add(w);
-          out.add(thens[i]);
-          i += 1;
-        }
-        let otherwise = e.otherwise;
-        if (otherwise != null) { out.add(otherwise); }
-      } else if (e is CastExpr) {
-        out.add(e.operand);
-      } else if (e is CallExpr) {
-        for (let arg of e.args) { out.add(arg); }
+      when (e) {
+        is ExistsExpr -> out.add(e.query);
+        is UnaryExpr -> out.add(e.operand);
+        is BinaryExpr -> do {
+          out.add(e.left);
+          out.add(e.right);
+        };
+        is ChainExpr -> do {
+          for (let operand of e.operands) { out.add(operand); }
+        };
+        is IsNullExpr -> out.add(e.operand);
+        is InListExpr -> do {
+          out.add(e.operand);
+          for (let item of e.items) { out.add(item); }
+        };
+        is InQueryExpr -> do {
+          out.add(e.operand);
+          out.add(e.query);
+        };
+        is BetweenExpr -> do {
+          out.add(e.operand);
+          out.add(e.low);
+          out.add(e.high);
+        };
+        is LikeExpr -> do {
+          out.add(e.operand);
+          out.add(e.pattern);
+        };
+        is CaseExpr -> do {
+          let subject = e.subject;
+          if (subject != null) { out.add(subject); }
+          let thens = e.thens;
+          var i = 0;
+          for (let w of e.whens) {
+            out.add(w);
+            out.add(thens[i]);
+            i += 1;
+          }
+          let otherwise = e.otherwise;
+          if (otherwise != null) { out.add(otherwise); }
+        };
+        is CastExpr -> out.add(e.operand);
+        is CallExpr -> do {
+          for (let arg of e.args) { out.add(arg); }
+        };
       }
       out.toList()
     }
@@ -1310,19 +1312,17 @@ The statement printer writes through an expression
 [printer](common-expressions.temper.md#printing), canonically:
 keywords in capitals, `JOIN` and `LEFT JOIN` for the joins, `AS` before
 every alias, no `ASC`, and `NULLS` only where the rule doesn't already
-put them.
+put them. For a target database, it writes `NULLS` and `OFFSET` as
+[rendering](common-rendering.temper.md) says.
 
     class StatementPrinter(private p: CommonPrinter) {
 
       public statement(s: CommonStatement): Void {
-        if (s is SelectStatement) {
-          select(s);
-        } else if (s is InsertStatement) {
-          insert(s);
-        } else if (s is UpdateStatement) {
-          update(s);
-        } else if (s is DeleteStatement) {
-          deleteFrom(s);
+        when (s) {
+          is SelectStatement -> select(s);
+          is InsertStatement -> insert(s);
+          is UpdateStatement -> update(s);
+          is DeleteStatement -> deleteFrom(s);
         }
       }
 
@@ -1334,7 +1334,7 @@ put them.
           first = false;
           let e = item.expr;
           if (e != null) {
-            p.write(e, 0);
+            p.item(e);
             alias(item.alias);
           } else {
             let table = item.table;
@@ -1372,15 +1372,70 @@ put them.
           for (let o of s.orders) {
             if (!firstOrder) { p.text(", "); }
             firstOrder = false;
-            p.write(o.expr, 0);
-            if (o.descending) { p.text(" DESC"); }
-            if (o.nullsFirst == o.descending) {
-              p.text(if (o.nullsFirst) { " NULLS FIRST" } else { " NULLS LAST" });
-            }
+            order(s, o);
           }
+        }
+        let t = p.target;
+        if (t != null) {
+          if (s.limit == null && s.offset != null && !t.noLimit.isEmpty) { p.text(" LIMIT ${t.noLimit}"); }
         }
         clause(" LIMIT ", s.limit);
         clause(" OFFSET ", s.offset);
+      }
+
+An `ORDER BY` item, with `NULLS` written where the database's own
+order differs from the rule's, and on MySQL, which has no `NULLS`,
+`x IS NULL` before it instead, where its order differs.
+
+      private order(s: SelectStatement, o: OrderItem): Void {
+        let t = p.target;
+        let nulls = if (t != null) { t.nulls } else { nullsSmallest };
+        let differs = if (nulls == nullsLargest) {
+          o.nullsFirst != o.descending
+        } else if (nulls == nullsWritten) {
+          true
+        } else {
+          o.nullsFirst == o.descending
+        };
+        if (differs && nulls == nullsEmulated) {
+          let key = nullsKey(s, o.expr);
+          if (key != null) {
+            p.write(key, levelConcat);
+            p.text(if (o.descending) { " IS NULL DESC, " } else { " IS NULL, " });
+          } else {
+            p.fail("NULLS FIRST or LAST on the place of a * in ORDER BY, for mysql");
+          }
+        }
+        p.write(o.expr, 0);
+        if (o.descending) { p.text(" DESC"); }
+        if (differs && nulls != nullsEmulated) {
+          p.text(if (o.nullsFirst) { " NULLS FIRST" } else { " NULLS LAST" });
+        }
+      }
+
+`nullsKey` is what an `ORDER BY` item sorts by, for `IS NULL`: the
+`SELECT` item that a place (`ORDER BY 2`) or an alias stands for, or
+else the item itself; null for the place of a `*`.
+
+      private nullsKey(s: SelectStatement, e: CommonExpr): CommonExpr? {
+        let items = s.items;
+        if (e is LiteralExpr && e.literal == literalInteger) {
+          let place = integerValue(p.lexer, e.at);
+          // Past the items, it's for the database to refuse.
+          return if (place >= 1 && place <= items.length) { items[place - 1].expr } else { e };
+        }
+        if (e is ColumnExpr) {
+          if (e.table == null) {
+            let name = p.nameText(e.column);
+            for (let item of items) {
+              let alias = item.alias;
+              if (alias != null) {
+                if (p.nameText(alias) == name) { return item.expr; }
+              }
+            }
+          }
+        }
+        e
       }
 
       private insert(s: InsertStatement): Void {
@@ -1429,10 +1484,9 @@ put them.
       }
 
       private fromSource(s: CommonSource): Void {
-        if (s is TableSource) {
-          tableName(s.table);
-        } else if (s is QuerySource) {
-          p.write(s.query, 0);
+        when (s) {
+          is TableSource -> tableName(s.table);
+          is QuerySource -> p.write(s.query, 0);
         }
         alias(s.alias);
       }
@@ -1519,19 +1573,21 @@ parts, or the problem that stopped it, and its holes.
       public problem: String?,
     ) {
 
-`rendered` writes the tree as canonical common SQL, in parts: text,
-with each name hole's name written in it, and each value as a
-`QueryParam`.
+`renderedFor` writes the tree for a dialect, in parts: text, with each
+name hole's name written in it, and each value as a `QueryParam`. For
+`Dialect.common` it's canonical common SQL; for a database, its SQL,
+with the problem, if any, that kept it from being written.
 
-      public rendered(): List<QueryPart> {
+      public renderedFor(dialect: Dialect): WrittenQuery {
         let out = new ListBuilder<QueryPart>();
         let s = statement;
-        if (s != null) { write(s, out); }
-        out.toList()
-      }
-
-      private write(s: CommonStatement, out: ListBuilder<QueryPart>): Void {
-        let printed = new CommonPrinter(lexer, false).printStatement(s);
+        if (s == null) { return new WrittenQuery(out.toList(), problem ?? "fails"); }
+        let common = dialect.name == "common";
+        let printer = new CommonPrinter(lexer, !common);
+        if (!common) { printer.target = commonTarget(dialect); }
+        printer.values = holes;
+        // `?? panic()`, since Temper doesn't narrow after an early return.
+        let printed = printer.printStatement(s ?? panic());
         var text = new StringBuilder();
         let runs = printed.runs;
         for (var i = 0; i < runs.length; i += 1) {
@@ -1539,7 +1595,8 @@ with each name hole's name written in it, and each value as a
           if (i < printed.holes.length) {
             let part = holes[printed.holes[i]];
             if (part is QueryName) {
-              text.append(canonicalName(part.name.name));
+              let name = part.name.name;
+              text.append(if (common) { canonicalName(name) } else { dialect.quoteName(name) orelse panic() });
             } else {
               out.add(new QueryText(text.toString()));
               text = new StringBuilder();
@@ -1548,6 +1605,7 @@ with each name hole's name written in it, and each value as a
           }
         }
         out.add(new QueryText(text.toString()));
+        new WrittenQuery(out.toList(), printer.problem)
       }
     }
 
@@ -1557,8 +1615,7 @@ with each name hole's name written in it, and each value as a
       let lexer = new CommonLexer();
       let holes = new ListBuilder<QueryPart>();
       var problem: String? = null;
-      for (var i = 0; i < parts.length; i += 1) {
-        let part = parts[i];
+      for (let part of parts) {
         var found: String? = null;
         if (part is QueryText) {
           found = lexer.scan(part.text);

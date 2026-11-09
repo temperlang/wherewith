@@ -37,6 +37,9 @@ CHANGED = "Unicode space DuckDB would change inside a quote"
 
 
 class Duckdb(rt.Engine):
+    corpus_name = "duckdb"
+    corpus_types = {"int": "BIGINT", "text": "VARCHAR", "float": "DOUBLE", "bool": "BOOLEAN"}
+
     def __init__(self) -> None:
         import duckdb  # noqa: PLC0415
 

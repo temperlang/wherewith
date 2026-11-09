@@ -5,8 +5,8 @@ reads the common lexer's tokens into a syntax tree, the checks an
 expression alone can show, and a printer that writes the tree back as
 canonical common SQL. [Statements](common-statements.temper.md) use
 these for their columns, conditions, and values, and expressions hold
-statements in turn, as subqueries; rendering for each database will
-write from the same tree.
+statements in turn, as subqueries; [rendering](common-rendering.temper.md)
+for each database writes from the same tree.
 
 The grammar, with keywords in any case:
 
@@ -924,6 +924,29 @@ unknown for columns and nested queries. The checker refuses:
   float for either.
 - **An aggregate inside an aggregate.**
 
+Narrower [targets](query.temper.md#querybuilder) relax the checks that
+are there because databases differ, when the targets left all read the
+construct alike; the traps (`NULL` that never matches, `ESCAPE`
+misused, and aggregates in aggregates) apply to every target. Each
+rule gives a letter per profile, in the order `sqlite`, `postgres`,
+`mysql`, `mysqlNoBackslashEscapes`, and `duckdb`; profiles with the
+same letter read it alike, and the check applies only to targets with
+different letters. Kinds that databases convert differently differ
+everywhere, but for the two MySQL profiles; the rest:
+
+| Rule | Letters | Why |
+| --- | --- | --- |
+| `/` without a float | `aabbc` | SQLite and PostgreSQL divide integers to an integer |
+| A boolean in `\|\|` | `abaab` | `1` in SQLite and MySQL, `true` in the others |
+| `LIKE` without `ESCAPE`, on a value or a `\` | `abbaa` | `\` escapes in PostgreSQL and MySQL, but not under `NO_BACKSLASH_ESCAPES` |
+| `SUBSTR` start below 1 or length below 0 | `abcca` | SQLite and DuckDB agree |
+
+    let ruleKinds = "abccd";
+    let ruleDivision = "aabbc";
+    let ruleBooleanText = "abaab";
+    let ruleLikeEscape = "abbaa";
+    let ruleSubstr = "abcca";
+
 The kinds:
 
     let kindUnknown = 0;
@@ -948,89 +971,82 @@ need.
 
 `check` gives an expression's kind, or bubbles with `problem`.
 
-      // Index loops here, since their bodies can bubble.
       public check(e: CommonExpr): Int throws Bubble {
-        if (e is LiteralExpr) {
-          let literal = e.literal;
-          if (literal == literalInteger) {
-            kindInteger
-          } else if (literal == literalDecimal) {
-            kindFloat
-          } else if (literal == literalString) {
-            kindText
-          } else if (literal == literalNull) {
-            kindNull
-          } else {
+        when (e) {
+          is LiteralExpr -> do {
+            let literal = e.literal;
+            if (literal == literalInteger) {
+              kindInteger
+            } else if (literal == literalDecimal) {
+              kindFloat
+            } else if (literal == literalString) {
+              kindText
+            } else if (literal == literalNull) {
+              kindNull
+            } else {
+              kindBoolean
+            }
+          };
+          is ValueExpr -> valueKind(e.hole);
+          is SubqueryExpr -> new StatementChecker(this).subquery(e.query);
+          is ExistsExpr -> do {
+            check(e.query);
             kindBoolean
-          }
-        } else if (e is ValueExpr) {
-          valueKind(e.hole)
-        } else if (e is SubqueryExpr) {
-          new StatementChecker(this).subquery(e.query)
-        } else if (e is ExistsExpr) {
-          check(e.query);
-          kindBoolean
-        } else if (e is UnaryExpr) {
-          let k = check(e.operand);
-          if (e.op == opNot) {
-            condition(k, e.operand);
+          };
+          is UnaryExpr -> do {
+            let k = check(e.operand);
+            if (e.op == opNot) {
+              condition(k, e.operand);
+              kindBoolean
+            } else {
+              arithmetic(k, e.operand);
+              if (k == kindInteger || k == kindFloat) { k } else { kindUnknown }
+            }
+          };
+          is BinaryExpr -> binary(e);
+          is ChainExpr -> chain(e);
+          is IsNullExpr -> do {
+            check(e.operand);
             kindBoolean
-          } else {
-            arithmetic(k, e.operand);
-            if (k == kindInteger || k == kindFloat) { k } else { kindUnknown }
-          }
-        } else if (e is BinaryExpr) {
-          binary(e)
-        } else if (e is ChainExpr) {
-          chain(e)
-        } else if (e is IsNullExpr) {
-          check(e.operand);
-          kindBoolean
-        } else if (e is InListExpr) {
-          let k = check(e.operand);
-          let items = e.items;
-          for (var i = 0; i < items.length; i += 1) {
-            let item = items[i];
-            if (isLiteral(item, literalNull)) { fail("NULL in an IN list never matches; use IS NULL", item.at); }
-            compare(k, check(item), item.at);
-          }
-          kindBoolean
-        } else if (e is InQueryExpr) {
-          let k = check(e.operand);
-          let query = e.query;
-          compare(k, check(query), query.at);
-          new StatementChecker(this).inSubquery(query.query);
-          kindBoolean
-        } else if (e is BetweenExpr) {
-          let k = check(e.operand);
-          compare(k, check(e.low), e.low.at);
-          compare(k, check(e.high), e.high.at);
-          kindBoolean
-        } else if (e is LikeExpr) {
-          like(e)
-        } else if (e is CaseExpr) {
-          caseKind(e)
-        } else if (e is CastExpr) {
-          cast(e)
-        } else if (e is CallExpr) {
-          call(e)
-        } else {
-          kindUnknown
+          };
+          is InListExpr -> do {
+            let k = check(e.operand);
+            let items = e.items;
+            for (let item of items) {
+              if (isLiteral(item, literalNull)) { fail("NULL in an IN list never matches; use IS NULL", item.at); }
+              compare(k, check(item), item.at);
+            }
+            kindBoolean
+          };
+          is InQueryExpr -> do {
+            let k = check(e.operand);
+            let query = e.query;
+            compare(k, check(query), query.at);
+            new StatementChecker(this).inSubquery(query.query);
+            kindBoolean
+          };
+          is BetweenExpr -> do {
+            let k = check(e.operand);
+            compare(k, check(e.low), e.low.at);
+            compare(k, check(e.high), e.high.at);
+            kindBoolean
+          };
+          is LikeExpr -> like(e);
+          is CaseExpr -> caseKind(e);
+          is CastExpr -> cast(e);
+          is CallExpr -> call(e);
+          else -> kindUnknown;
         }
       }
 
       public valueKind(hole: Int): Int {
         let value = holeValue(hole);
-        if (value is SqlText) {
-          kindText
-        } else if (value is SqlInt) {
-          kindInteger
-        } else if (value is SqlFloat) {
-          kindFloat
-        } else if (value is SqlBool) {
-          kindBoolean
-        } else {
-          kindUnknown
+        when (value) {
+          is SqlText -> kindText;
+          is SqlInt -> kindInteger;
+          is SqlFloat -> kindFloat;
+          is SqlBool -> kindBoolean;
+          else -> kindUnknown;
         }
       }
 
@@ -1070,11 +1086,11 @@ Comparisons and arithmetic.
         arithmetic(right, e.right);
         let float = left == kindFloat || right == kindFloat;
         if (op == opDiv || op == opMod) {
-          if (op == opDiv && !float) {
+          if (op == opDiv && !float && varies(ruleDivision)) {
             fail("/ without a float operand; databases divide integers differently", e.at);
           }
-          if (op == opMod && float) { fail("% of a float; SQLite truncates it to an integer", e.at); }
-          if (literalSign(e.right) == 0) { fail("${opTexts[op]} by zero; databases differ", e.at); }
+          if (op == opMod && float && varies(ruleKinds)) { fail("% of a float; SQLite truncates it to an integer", e.at); }
+          if (literalSign(e.right) == 0 && varies(ruleKinds)) { fail("${opTexts[op]} by zero; databases differ", e.at); }
         }
         if (op == opDiv || float) {
           kindFloat
@@ -1089,14 +1105,13 @@ Comparisons and arithmetic.
 
       private chain(e: ChainExpr): Int throws Bubble {
         let operands = e.operands;
-        for (var i = 0; i < operands.length; i += 1) {
-          let operand = operands[i];
+        for (let operand of operands) {
           let k = check(operand);
           if (e.op != opConcat) {
             condition(k, operand);
-          } else if (k == kindBoolean) {
+          } else if (k == kindBoolean && varies(ruleBooleanText)) {
             fail("a boolean in ||; databases write booleans differently", operand.at);
-          } else if (k == kindFloat) {
+          } else if (k == kindFloat && varies(ruleKinds)) {
             fail("a float in ||; databases write floats differently", operand.at);
           }
         }
@@ -1115,8 +1130,12 @@ Comparisons and arithmetic.
         };
         if (escape != null) {
           escaped(escape, literal, pattern);
-        } else if (literal == null) {
-          fail("LIKE without ESCAPE takes only a literal pattern", pattern.at);
+        } else if (varies(ruleLikeEscape)) {
+          if (literal == null) {
+            fail("LIKE without ESCAPE takes only a literal pattern", pattern.at);
+          } else if (hasCodePoint(literal, char'\\')) {
+            fail("\\ in a LIKE pattern without ESCAPE; databases differ", pattern.at);
+          }
         }
         kindBoolean
       }
@@ -1175,15 +1194,16 @@ Comparisons and arithmetic.
       private cast(e: CastExpr): Int throws Bubble {
         let k = check(e.operand);
         let target = e.target;
-        if (k == kindBoolean) { fail("CAST of a boolean; databases convert booleans differently", e.at); }
-        if (k == kindFloat && target == castInteger) {
+        let differ = varies(ruleKinds);
+        if (k == kindBoolean && differ) { fail("CAST of a boolean; databases convert booleans differently", e.at); }
+        if (k == kindFloat && target == castInteger && differ) {
           fail("CAST of a float to INTEGER; SQLite truncates, the others round", e.at);
         }
-        if (k == kindFloat && target == castText) {
+        if (k == kindFloat && target == castText && differ) {
           fail("CAST of a float to TEXT; databases write floats differently", e.at);
         }
         let operand = e.operand;
-        if (operand is LiteralExpr && operand.literal == literalString && target != castText) {
+        if (operand is LiteralExpr && operand.literal == literalString && target != castText && differ) {
           if (!plainNumber(lexer.stringValue(operand.at), target == castDouble)) {
             fail("CAST of a string that isn't a plain number", e.at);
           }
@@ -1202,9 +1222,9 @@ Comparisons and arithmetic.
         }
         let kinds = new ListBuilder<Int>();
         let exprs = new ListBuilder<CommonExpr>();
-        for (var i = 0; i < args.length; i += 1) {
-          kinds.add(check(args[i]));
-          exprs.add(args[i]);
+        for (let arg of args) {
+          kinds.add(check(arg));
+          exprs.add(arg);
         }
         if (aggregate) { aggregates -= 1; }
         if (callee == fnCount) { return kindInteger; }
@@ -1215,7 +1235,7 @@ Comparisons and arithmetic.
           return known(first);
         }
         if (callee == fnMin || callee == fnMax) {
-          if (first == kindBoolean) { fail("a boolean in ${name}", args[0].at); }
+          if (first == kindBoolean && varies(ruleKinds)) { fail("a boolean in ${name}", args[0].at); }
           return known(first);
         }
         if (callee == fnAbs || callee == fnAvg || callee == fnSum) {
@@ -1236,10 +1256,12 @@ Comparisons and arithmetic.
         if (callee == fnSubstr) {
           for (var i = 1; i < args.length; i += 1) {
             let k = kinds[i];
-            if (k != kindInteger && k != kindUnknown && k != kindNull) { fail("${described(k)} in SUBSTR", args[i].at); }
+            if (k != kindInteger && k != kindUnknown && k != kindNull && varies(ruleKinds)) {
+              fail("${described(k)} in SUBSTR", args[i].at);
+            }
           }
-          if (literalSign(args[1]) <= 0) { fail("SUBSTR start below 1; databases differ", args[1].at); }
-          if (args.length > 2 && literalSign(args[2]) < 0) {
+          if (literalSign(args[1]) <= 0 && varies(ruleSubstr)) { fail("SUBSTR start below 1; databases differ", args[1].at); }
+          if (args.length > 2 && literalSign(args[2]) < 0 && varies(ruleSubstr)) {
             fail("SUBSTR length below 0; databases differ", args[2].at);
           }
         }
@@ -1249,27 +1271,29 @@ Comparisons and arithmetic.
 ### Kinds
 
       public condition(k: Int, e: CommonExpr): Void throws Bubble {
-        if (k == kindInteger || k == kindFloat || k == kindText) {
+        if ((k == kindInteger || k == kindFloat || k == kindText) && varies(ruleKinds)) {
           fail("${described(k)} where a condition goes", e.at);
         }
       }
 
       private arithmetic(k: Int, e: CommonExpr): Void throws Bubble {
-        if (k == kindBoolean || k == kindText) { fail("${described(k)} in arithmetic", e.at); }
+        if ((k == kindBoolean || k == kindText) && varies(ruleKinds)) { fail("${described(k)} in arithmetic", e.at); }
       }
 
       private numeric(k: Int, e: CommonExpr, name: String): Void throws Bubble {
-        if (k == kindBoolean || k == kindText) { fail("${described(k)} in ${name}", e.at); }
+        if ((k == kindBoolean || k == kindText) && varies(ruleKinds)) { fail("${described(k)} in ${name}", e.at); }
       }
 
       private textual(k: Int, e: CommonExpr, name: String): Void throws Bubble {
-        if (k == kindBoolean || k == kindInteger || k == kindFloat) { fail("${described(k)} in ${name}", e.at); }
+        if ((k == kindBoolean || k == kindInteger || k == kindFloat) && varies(ruleKinds)) {
+          fail("${described(k)} in ${name}", e.at);
+        }
       }
 
       private compare(a: Int, b: Int, at: CommonToken): Void throws Bubble {
         let x = family(a);
         let y = family(b);
-        if (x != 0 && y != 0 && x != y) { fail("comparing ${described(a)} with ${described(b)}", at); }
+        if (x != 0 && y != 0 && x != y && varies(ruleKinds)) { fail("comparing ${described(a)} with ${described(b)}", at); }
       }
 
 `mixed` is the kind of results that may be any of several, as `CASE`
@@ -1285,7 +1309,7 @@ and `COALESCE` give, refusing kinds that differ.
             let g = family(first);
             if (g == 0) {
               first = k;
-            } else if (g != f) {
+            } else if (g != f && varies(ruleKinds)) {
               fail("${name} mixes ${described(first)} and ${described(k)}", exprs[i].at);
             }
           }
@@ -1305,6 +1329,22 @@ and `COALESCE` give, refusing kinds that differ.
       public fail(message: String, at: CommonToken): Void throws Bubble {
         problem = lexer.located(message, at.line, at.column, at.offset);
         bubble()
+      }
+
+`varies` says whether the targets read something differently, by its
+rule's letters.
+
+      public varies(rule: String): Boolean {
+        var seen = -1;
+        for (let d of targets) {
+          let letter = ruleLetter(rule, d);
+          if (seen < 0) {
+            seen = letter;
+          } else if (letter != seen) {
+            return true;
+          }
+        }
+        false
       }
 
 A kind's family, where integers and floats are both numbers, or 0 for
@@ -1344,22 +1384,24 @@ unknown and `NULL`.
 or 1, or 2 for anything else.
 
       private literalSign(e: CommonExpr): Int {
-        if (e is UnaryExpr) {
-          if (e.op == opNot) { return 2; }
-          let sign = literalSign(e.operand);
-          if (sign == 2 || e.op == opPos) { sign } else { -sign }
-        } else if (e is LiteralExpr) {
-          if (e.literal != literalInteger && e.literal != literalDecimal) { return 2; }
-          let t = e.at;
-          let text = lexer.runs[t.run];
-          var sign = 0;
-          for (var i = t.begin; i < t.end; i = text.next(i)) {
-            let c = text[i];
-            if (c >= char'1' && c <= char'9') { sign = 1; }
-          }
-          sign
-        } else {
-          2
+        when (e) {
+          is UnaryExpr -> do {
+            if (e.op == opNot) { return 2; }
+            let sign = literalSign(e.operand);
+            if (sign == 2 || e.op == opPos) { sign } else { -sign }
+          };
+          is LiteralExpr -> do {
+            if (e.literal != literalInteger && e.literal != literalDecimal) { return 2; }
+            let t = e.at;
+            let text = lexer.runs[t.run];
+            var sign = 0;
+            for (var i = t.begin; i < t.end; i = text.next(i)) {
+              let c = text[i];
+              if (c >= char'1' && c <= char'9') { sign = 1; }
+            }
+            sign
+          };
+          else -> 2;
         }
       }
 
@@ -1399,12 +1441,22 @@ Holes stay holes: the result is a template, its runs of text between
 them. The [statement printer](common-statements.temper.md) writes
 through it.
 
+With a `target`, it writes for that database instead, as
+[rendering](common-rendering.temper.md) says: explicit parentheses
+(but none around the operands of `AND` and `OR`), every name quoted,
+and the target's own pieces where databases differ. `values` are the
+template's holes, for their types, and `problem` says what it couldn't
+write, such as a name the target refuses in a query made unchecked.
+
     class CommonTemplate(public runs: List<String>, public holes: List<Int>) {}
 
     class CommonPrinter(public lexer: CommonLexer, public explicit: Boolean) {
       private runs: ListBuilder<String> = new ListBuilder<String>();
       private holes: ListBuilder<Int> = new ListBuilder<Int>();
       private var out: StringBuilder = new StringBuilder();
+      public var target: CommonTarget? = null;
+      public var values: List<QueryPart> = new ListBuilder<QueryPart>().toList();
+      public var problem: String? = null;
 
       public print(e: CommonExpr): CommonTemplate {
         write(e, 0);
@@ -1424,6 +1476,10 @@ through it.
 
       public text(s: String): Void { out.append(s); }
 
+      public fail(message: String): Void {
+        if (problem == null) { problem = message; }
+      }
+
 `write` writes an expression where the grammar needs at least `level`,
 in parentheses if it has less.
 
@@ -1436,87 +1492,253 @@ in parentheses if it has less.
       }
 
       private node(e: CommonExpr): Void {
-        if (e is LiteralExpr) {
-          literal(e);
-        } else if (e is ValueExpr) {
-          hole(e.hole);
-        } else if (e is ColumnExpr) {
-          let table = e.table;
-          if (table != null) {
-            name(table);
-            out.append(".");
-          }
-          name(e.column);
-        } else if (e is SubqueryExpr) {
-          out.append("(");
-          new StatementPrinter(this).select(e.query);
+        when (e) {
+          is LiteralExpr -> literal(e);
+          is ValueExpr -> hole(e.hole);
+          is ColumnExpr -> do {
+            let table = e.table;
+            if (table != null) {
+              name(table);
+              out.append(".");
+            }
+            name(e.column);
+          };
+          is SubqueryExpr -> do {
+            out.append("(");
+            new StatementPrinter(this).select(e.query);
+            out.append(")");
+          };
+          is ExistsExpr -> do {
+            out.append("EXISTS ");
+            node(e.query);
+          };
+          is UnaryExpr -> do {
+            let op = e.op;
+            if (op == opNot) {
+              out.append("NOT ");
+              write(e.operand, levelNot);
+            } else {
+              out.append(opTexts[op]);
+              // A space keeps `- -x` from starting a comment.
+              let operand = e.operand;
+              if (operand is UnaryExpr && operand.op != opNot && !explicit) { out.append(" "); }
+              write(operand, levelUnary);
+            }
+          };
+          is BinaryExpr -> do {
+            let level = levelOf(e);
+            let comparing = level == levelPredicate;
+            write(e.left, if (comparing) { levelConcat } else { level });
+            out.append(" ${opTexts[e.op]} ");
+            write(e.right, if (comparing) { levelConcat } else { level + 1 });
+          };
+          is ChainExpr -> do {
+            let t = target;
+            let concatFor = if (e.op == opConcat) { t } else { null };
+            if (concatFor != null) {
+              concat(e, concatFor);
+            } else {
+              let level = if (e.op == opConcat) { levelUnary } else { levelOf(e) + 1 };
+              let joiner = " ${opTexts[e.op]} ";
+              var first = true;
+              for (let operand of e.operands) {
+                if (!first) { out.append(joiner); }
+                first = false;
+                if (t != null) { loose(operand); } else { write(operand, level); }
+              }
+            }
+          };
+          is IsNullExpr -> do {
+            write(e.operand, levelConcat);
+            out.append(if (e.negated) { " IS NOT NULL" } else { " IS NULL" });
+          };
+          is InListExpr -> do {
+            write(e.operand, levelConcat);
+            out.append(if (e.negated) { " NOT IN (" } else { " IN (" });
+            list(e.items);
+            out.append(")");
+          };
+          is InQueryExpr -> do {
+            write(e.operand, levelConcat);
+            out.append(if (e.negated) { " NOT IN " } else { " IN " });
+            node(e.query);
+          };
+          is BetweenExpr -> do {
+            write(e.operand, levelConcat);
+            out.append(if (e.negated) { " NOT BETWEEN " } else { " BETWEEN " });
+            write(e.low, levelConcat);
+            out.append(" AND ");
+            write(e.high, levelConcat);
+          };
+          is LikeExpr -> do {
+            write(e.operand, levelConcat);
+            out.append(if (e.negated) { " NOT LIKE " } else { " LIKE " });
+            write(e.pattern, levelConcat);
+            let escape = e.escape;
+            if (escape != null) { out.append(" ESCAPE ${lexer.tokenText(escape)}"); }
+          };
+          is CaseExpr -> caseExpr(e);
+          is CastExpr -> do {
+            out.append("CAST(");
+            write(e.operand, 0);
+            let t = target;
+            let names = if (t != null) { t.castNames } else { castNames };
+            out.append(" AS ${names[e.target]})");
+          };
+          is CallExpr -> do {
+            let callee = e.callee;
+            let t = target;
+            var called = functionNames[callee];
+            if (t != null) {
+              if (callee == fnLength) { called = t.lengthName; }
+            }
+            out.append("${called}(");
+            if (e.distinct) { out.append("DISTINCT "); }
+            if (e.args.isEmpty) {
+              out.append("*");
+            } else if (callee == fnCoalesce || callee == fnNullif) {
+              group(e.args);
+            } else {
+              list(e.args);
+            }
+            out.append(")");
+          };
+        }
+      }
+
+An operand of `AND` or `OR`, for a target: in parentheses only if it's
+another `AND` or `OR`.
+
+      private loose(e: CommonExpr): Void {
+        let paren = levelOf(e) <= levelAnd;
+        if (paren) { out.append("("); }
+        node(e);
+        if (paren) { out.append(")"); }
+      }
+
+`||`, for a target: `CONCAT(…)` where `||` isn't concatenation, and
+for PostgreSQL, each value cast to `TEXT`, and the first operand too if
+neither of the first two is text, since PostgreSQL has no `||` for two
+numbers.
+
+      private concat(e: ChainExpr, t: CommonTarget): Void {
+        let operands = e.operands;
+        if (t.concatCall) {
+          out.append("CONCAT(");
+          list(operands);
           out.append(")");
-        } else if (e is ExistsExpr) {
-          out.append("EXISTS ");
-          node(e.query);
-        } else if (e is UnaryExpr) {
-          let op = e.op;
-          if (op == opNot) {
-            out.append("NOT ");
-            write(e.operand, levelNot);
+          return;
+        }
+        let castFirst = t.castsUnknown && !textual(operands[0]) && !textual(operands[1]);
+        for (var i = 0; i < operands.length; i += 1) {
+          if (i > 0) { out.append(" || "); }
+          let operand = operands[i];
+          let hole = if (t.castsUnknown) { valueHole(operand) } else { -1 };
+          if (hole >= 0) {
+            castValue(hole, "TEXT");
+          } else if (i == 0 && castFirst) {
+            out.append("CAST(");
+            write(operand, 0);
+            out.append(" AS TEXT)");
           } else {
-            out.append(opTexts[op]);
-            // A space keeps `- -x` from starting a comment.
-            let operand = e.operand;
-            if (operand is UnaryExpr && operand.op != opNot && !explicit) { out.append(" "); }
             write(operand, levelUnary);
           }
-        } else if (e is BinaryExpr) {
-          let level = levelOf(e);
-          let comparing = level == levelPredicate;
-          write(e.left, if (comparing) { levelConcat } else { level });
-          out.append(" ${opTexts[e.op]} ");
-          write(e.right, if (comparing) { levelConcat } else { level + 1 });
-        } else if (e is ChainExpr) {
-          let level = if (e.op == opConcat) { levelUnary } else { levelOf(e) + 1 };
-          let joiner = " ${opTexts[e.op]} ";
-          var first = true;
-          for (let operand of e.operands) {
-            if (!first) { out.append(joiner); }
-            first = false;
-            write(operand, level);
-          }
-        } else if (e is IsNullExpr) {
-          write(e.operand, levelConcat);
-          out.append(if (e.negated) { " IS NOT NULL" } else { " IS NULL" });
-        } else if (e is InListExpr) {
-          write(e.operand, levelConcat);
-          out.append(if (e.negated) { " NOT IN (" } else { " IN (" });
-          list(e.items);
-          out.append(")");
-        } else if (e is InQueryExpr) {
-          write(e.operand, levelConcat);
-          out.append(if (e.negated) { " NOT IN " } else { " IN " });
-          node(e.query);
-        } else if (e is BetweenExpr) {
-          write(e.operand, levelConcat);
-          out.append(if (e.negated) { " NOT BETWEEN " } else { " BETWEEN " });
-          write(e.low, levelConcat);
-          out.append(" AND ");
-          write(e.high, levelConcat);
-        } else if (e is LikeExpr) {
-          write(e.operand, levelConcat);
-          out.append(if (e.negated) { " NOT LIKE " } else { " LIKE " });
-          write(e.pattern, levelConcat);
-          let escape = e.escape;
-          if (escape != null) { out.append(" ESCAPE ${lexer.tokenText(escape)}"); }
-        } else if (e is CaseExpr) {
-          caseExpr(e);
-        } else if (e is CastExpr) {
-          out.append("CAST(");
-          write(e.operand, 0);
-          out.append(" AS ${castNames[e.target]})");
-        } else if (e is CallExpr) {
-          out.append("${functionNames[e.callee]}(");
-          if (e.distinct) { out.append("DISTINCT "); }
-          if (e.args.isEmpty) { out.append("*"); } else { list(e.args); }
-          out.append(")");
         }
+      }
+
+Whether an expression is text, as PostgreSQL sees it: a string, a
+value cast to text, a text function, a cast to `TEXT`, or `||`.
+
+      private textual(e: CommonExpr): Boolean {
+        when (e) {
+          is LiteralExpr -> e.literal == literalString;
+          is CallExpr -> do {
+            let callee = e.callee;
+            callee == fnLower || callee == fnUpper || callee == fnTrim || callee == fnReplace || callee == fnSubstr
+          };
+          is CastExpr -> e.target == castText;
+          is ChainExpr -> e.op == opConcat;
+          else -> e is ValueExpr;
+        }
+      }
+
+`item` writes a `SELECT` item: for PostgreSQL, a value alone is cast to
+its type, which nothing else there gives it.
+
+      public item(e: CommonExpr): Void {
+        let t = target;
+        let hole = if (t != null && t.castsUnknown) { valueHole(e) } else { -1 };
+        if (hole >= 0) {
+          castValue(hole, valueType(hole) ?? "TEXT");
+        } else {
+          write(e, 0);
+        }
+      }
+
+`valueHole` is a value's hole, or -1 for anything else.
+
+      private valueHole(e: CommonExpr): Int {
+        if (e is ValueExpr) { e.hole } else { -1 }
+      }
+
+`group` writes `CASE` results, or `COALESCE` or `NULLIF` arguments, for
+PostgreSQL casting each value to the group's type when nothing else in
+the group has a type: when the rest are values, strings, and `NULL`.
+
+      private group(items: List<CommonExpr>): Void {
+        let type = groupType(items);
+        var first = true;
+        for (let item of items) {
+          if (!first) { out.append(", "); }
+          first = false;
+          groupItem(item, type);
+        }
+      }
+
+      private groupItem(e: CommonExpr, type: String): Void {
+        let hole = if (type.isEmpty) { -1 } else { valueHole(e) };
+        if (hole >= 0) { castValue(hole, type); } else { write(e, 0); }
+      }
+
+      private groupType(items: List<CommonExpr>): String {
+        let t = target;
+        if (t == null || !t.castsUnknown) { return ""; }
+        var type = "";
+        for (let e of items) {
+          if (e is ValueExpr) {
+            let own = valueType(e.hole);
+            if (own != null) {
+              if (type.isEmpty) { type = own; }
+            }
+          } else if (e is LiteralExpr && e.literal == literalString) {
+            if (type.isEmpty) { type = "TEXT"; }
+          } else if (!(e is LiteralExpr && e.literal == literalNull)) {
+            return "";
+          }
+        }
+        if (type.isEmpty) { "TEXT" } else { type }
+      }
+
+`valueType` is the PostgreSQL type for a value's hole, or null for
+`NULL`.
+
+      private valueType(hole: Int): String? {
+        if (hole < 0 || hole >= values.length) { return null; }
+        let part = values[hole];
+        let value = if (part is QueryParam) { part.value } else { null };
+        when (value) {
+          is SqlText -> "TEXT";
+          is SqlInt -> "BIGINT";
+          is SqlFloat -> "DOUBLE PRECISION";
+          is SqlBool -> "BOOLEAN";
+          else -> null;
+        }
+      }
+
+      public castValue(index: Int, type: String): Void {
+        out.append("CAST(");
+        hole(index);
+        out.append(" AS ${type})");
       }
 
       private caseExpr(e: CaseExpr): Void {
@@ -1527,18 +1749,22 @@ in parentheses if it has less.
           write(subject, 0);
         }
         let thens = e.thens;
+        let otherwise = e.otherwise;
+        let results = new ListBuilder<CommonExpr>();
+        for (let r of thens) { results.add(r); }
+        if (otherwise != null) { results.add(otherwise); }
+        let type = groupType(results.toList());
         var i = 0;
         for (let w of e.whens) {
           out.append(" WHEN ");
           write(w, 0);
           out.append(" THEN ");
-          write(thens[i], 0);
+          groupItem(thens[i], type);
           i += 1;
         }
-        let otherwise = e.otherwise;
         if (otherwise != null) {
           out.append(" ELSE ");
-          write(otherwise, 0);
+          groupItem(otherwise, type);
         }
         out.append(" END");
       }
@@ -1561,7 +1787,17 @@ in parentheses if it has less.
         } else if (literal == literalFalse) {
           out.append("FALSE");
         } else if (literal == literalString) {
-          out.append(lexer.tokenText(e.at));
+          let t = target;
+          if (t != null) {
+            let value = lexer.stringValue(e.at);
+            out.append(t.dialect.quoteString(value) orelse "");
+            if (problem == null) {
+              let found = t.dialect.stringProblem(value);
+              if (found != null) { problem = "${found} for ${t.dialect.name}"; }
+            }
+          } else {
+            out.append(lexer.tokenText(e.at));
+          }
         } else {
           // Without leading zeros, but with a digit before any point.
           let t = e.at;
@@ -1581,7 +1817,27 @@ in parentheses if it has less.
           hole(n.hole);
           return;
         }
-        out.append(canonicalName(lexer.nameValue(n.token)));
+        let value = lexer.nameValue(n.token);
+        let t = target;
+        if (t != null) {
+          out.append(t.dialect.quoteName(value) orelse "");
+          if (problem == null) {
+            let found = t.dialect.nameProblem(value);
+            if (found != null) { problem = "${found} for ${t.dialect.name}"; }
+          }
+        } else {
+          out.append(canonicalName(value));
+        }
+      }
+
+`nameText` is a name's text, written or from its hole.
+
+      public nameText(n: CommonName): String {
+        if (n.hole >= 0 && n.hole < values.length) {
+          let part = values[n.hole];
+          if (part is QueryName) { return part.name.name; }
+        }
+        lexer.nameValue(n.token)
       }
 
       public hole(index: Int): Void {
@@ -1631,6 +1887,26 @@ word with a meaning, or else quoted.
         if (!((c >= char'a' && c <= char'z') || isDigit(c) || c == char'_')) { return false; }
       }
       !commonWords.has(value)
+    }
+
+`ruleLetter` is a profile's letter in a check's rule.
+
+    let ruleLetter(rule: String, dialect: Dialect): Int {
+      let name = dialect.name;
+      let place = if (name == "sqlite") {
+        0
+      } else if (name == "postgres") {
+        1
+      } else if (name == "mysql") {
+        2
+      } else if (name == "mysqlNoBackslashEscapes") {
+        3
+      } else {
+        4
+      };
+      var i = String.begin;
+      for (var k = 0; k < place && rule.hasIndex(i); k += 1) { i = rule.next(i); }
+      if (rule.hasIndex(i)) { rule[i] } else { 0 }
     }
 
 Precedence levels, from loosest to tightest.

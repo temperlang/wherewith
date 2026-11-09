@@ -1,10 +1,13 @@
 # Wherewith
 
-Writes SQL safely for SQLite, PostgreSQL, MySQL or MariaDB, and DuckDB,
-the same in every language: quoting names and strings the way each database
-really reads them, and templates that bind values as parameters, so a
-value never becomes SQL. It's designed to sit underneath safe
-composition frameworks, query builders, and admin tools.
+Write a query once, in a common SQL dialect, and run it on SQLite,
+PostgreSQL, MySQL or MariaDB, and DuckDB, the same in every language.
+Wherewith checks that the query means the same on every database, and
+renders it for each, with values always bound as parameters, so a value
+never becomes SQL. Underneath are the pieces safe composition
+frameworks, query builders, and admin tools need: quoting names and
+strings the way each database really reads them, and templates for
+each database.
 
 **Status: beta**, until Temper's translations reach 1.0. The API may
 change.
@@ -14,36 +17,39 @@ change.
 In Temper, and the same API in each supported language:
 
 ```temper
-// Values are bound as parameters, never written into the SQL.
+// One query, checked for every database when the sql tag runs.
+let q = sql"SELECT name, coalesce(nick, name) AS shown FROM users
+  WHERE id IN (${a}, ${b}) ORDER BY name NULLS LAST LIMIT ${10}";
+
+// Rendered for each, with the placeholders its driver takes.
+q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+// SELECT "name", COALESCE("nick", "name") AS "shown" FROM "users"
+//   WHERE "id" IN ($1, $2) ORDER BY "name" LIMIT $3
+q.render(Dialect.mysql, PlaceholderStyle.question) orelse panic();
+// SELECT `name`, COALESCE(`nick`, `name`) AS `shown` FROM `users`
+//   WHERE `id` IN (?, ?) ORDER BY `name` IS NULL, `name` LIMIT ?
+
+// What databases would read differently is refused, with its place.
+sql"SELECT a / 2 FROM t"; // panics: / without a float operand
+
+// Each database's own templates check its SQL with its rules, for
+// what the common dialect doesn't cover.
 let name = "Robert'); DROP TABLE students; --";
-let q = postgres"SELECT id FROM students WHERE name = ${name}";
-q.params; // [SqlText(name)]
-
-// The placeholder style depends on the driver, so it's chosen when
-// rendering: ?, $1, %s, @p1, or :p1.
-let r = q.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
-r.sql;    // SELECT id FROM students WHERE name = $1, or = %s for psycopg
-
-// Templates for SQLite, PostgreSQL, MySQL, and DuckDB each check the SQL
-// text with that database's rules, and plain code can use a QueryBuilder.
-// A query renders only for the database it was checked for.
+let p = postgres"SELECT id FROM students WHERE name = ${name}";
+p.render(Dialect.postgres, PlaceholderStyle.dollarNumbered) orelse panic();
+// SELECT id FROM students WHERE name = $1
 mysql"SELECT * FROM t WHERE a = '${name}'"; // panics: a value inside quotes
-q.render(Dialect.mysql, PlaceholderStyle.question); // bubbles: q is for postgres
 
-// Names are quoted as each database expects.
-Dialect.postgres.quoteName("my \"table\"");   // "my ""table"""
+// Names and strings are quoted as each database expects.
 Dialect.mysql.quoteName("my `table`");        // `my ``table```
-
-// Where SQL has to be text, strings are quoted per dialect too.
-Dialect.sqlite.quoteString("it's \\ fine"); // 'it''s \ fine'
 Dialect.mysql.quoteString("it's \\ fine");  // 'it''s \\ fine'
 ```
 
 Anything that can't be written safely, such as a NUL in a PostgreSQL
 string or a 64-byte PostgreSQL name, fails rather than being changed.
-See the [design](docs/design.md) for each dialect's rules, with links to
-the manuals, which drivers take which placeholders, and what's planned,
-such as whitelists for syntax users may pick, like column types.
+See the [design](docs/design.md) for the common dialect and how it
+renders for each database, each dialect's rules, with links to the
+manuals, which drivers take which placeholders, and what's planned.
 
 ## Languages
 
@@ -85,7 +91,10 @@ Python's standard library):
 SQLite and DuckDB are embedded, so those run anywhere. The PostgreSQL
 and MariaDB runners skip unless a server is reachable,
 at `127.0.0.1` on the usual port by default; each script's
-documentation lists the variables that change that.
+documentation lists the variables that change that. Each also runs the
+common dialect's shared corpus (`common_corpus.py`): the same queries,
+rendered for that engine, giving the same rows, but where the design
+documents a difference, and random ones checked against SQLite.
 
 CI runs the tests on every backend for pull requests and pushes to
 `main`, using Temper's nightly `dev` build, and the round trips with
