@@ -1,8 +1,9 @@
 # Queries
 
 A *Query* is SQL with its values kept apart: text, parameters, and
-names, in order. Tags (`sqlite`, `postgres`, `mysql`, and `duckdb`)
-and plain code both make queries with a `QueryBuilder`, which checks
+names, in order. Tags (`sqlite`, `postgres`, `mysql`, `duckdb`, and
+`sql` for [the common dialect](common.temper.md)) and plain code both
+make queries with a `QueryBuilder`, which checks
 the text with one database's lexing rules, and the query remembers that
 [Dialect](core.temper.md). Rendering it quotes its names for the
 dialect, and writes its parameters in a *PlaceholderStyle*, the way the
@@ -120,11 +121,17 @@ parameter. A query for `mysql` renders for `mysqlNoBackslashEscapes`
 too, and the other way around, since both check templates with the
 same lexer, which refuses text the two modes read differently.
 
+A common query renders, for now, only for `Dialect.common`, as it was
+written; rendering it for each database waits for the parser.
+
 A named style's marker (`@` or `:`) can't be anywhere in the query's
 text, even inside quotes, since a driver that looks for names could
 misread it.
 
       public renderProblem(dialect: Dialect, style: PlaceholderStyle): String? {
+        if (this.dialect.name == "common" && dialect.name != "common") {
+          return "rendering a common query for ${dialect.name} isn't built yet";
+        }
         if (!sameLexing(this.dialect, dialect)) {
           return "query checked for ${this.dialect.name}, not ${dialect.name}";
         }
@@ -239,7 +246,8 @@ mistake can't misplace a parameter:
 
 Text passed to `appendSafe` is trusted SQL; consecutive calls join up
 before they're checked. A mistake makes `build` bubble, with
-`templateProblem` saying why; for a tag, it panics.
+`templateProblem` saying why (and, for the common dialect, where); for
+a tag, it panics.
 
 ```temper inert
 let b = new QueryBuilder(Dialect.mysql);
@@ -288,20 +296,21 @@ let q = b.build() orelse panic();
 
       @overload("append")
       public appendValue(x: SqlValue): Void {
-        if (hole()) { parts.add(new QueryParam(x)); }
+        if (hole(holeValue)) { parts.add(new QueryParam(x)); }
       }
 
       @overload("append")
       public appendIdentifier(x: Identifier): Void {
-        if (hole()) { parts.add(new QueryName(x)); }
+        if (hole(holeName)) { parts.add(new QueryName(x)); }
       }
 
       @overload("append")
       public appendQuery(x: Query): Void {
+        flush();
         if (!sameLexing(x.dialect, dialect)) {
-          fail("nested query checked for ${x.dialect.name}, not ${dialect.name}");
+          fail(lexer.locate("nested query checked for ${x.dialect.name}, not ${dialect.name}"));
         }
-        if (hole()) {
+        if (hole(holeQuery)) {
           for (let p of x.parts) { parts.add(p); }
         }
       }
@@ -312,7 +321,8 @@ let q = b.build() orelse panic();
           appendSafe("\n");
           flush();
         }
-        if (!lexer.inCode) { fail("template ends inside a quote or comment"); }
+        let ended = lexer.endProblem();
+        if (ended != null) { fail(ended); }
         if (problem != null) { bubble() }
         Query.unchecked(dialect, parts)
       }
@@ -331,19 +341,20 @@ let q = b.build() orelse panic();
         let text = pending.toString();
         pending = new StringBuilder();
         hasPending = false;
-        if (hasCodePoint(text, 0)) { fail("NUL in template text"); }
         let found = lexer.scan(text);
         if (found != null) { fail(found); }
+        if (hasCodePoint(text, 0)) { fail("NUL in template text"); }
         parts.add(new QueryText(text));
       }
 
-      private hole(): Boolean {
+      private hole(kind: Int): Boolean {
         flush();
         if (lexer.inCode) {
-          lexer.hole();
+          let found = lexer.hole(kind);
+          if (found != null) { fail(found); }
           true
         } else {
-          fail("hole inside a quote or comment");
+          fail(lexer.locate("hole inside a quote or comment"));
           false
         }
       }
@@ -370,11 +381,29 @@ Whether it ends in a line comment.
 
       public get inLineComment(): Boolean;
 
-That a hole comes next, where code goes, so the text on either side
-of it can't join into one token.
+That a hole of a kind comes next, where code goes, so the text on
+either side of it can't join into one token. It gives a problem with
+the hole, if the lexer sees one.
 
-      public hole(): Void;
+      public hole(kind: Int): String?;
+
+`locate` adds where the lexer is to a problem the builder finds, for
+lexers that track positions.
+
+      public locate(message: String): String { message }
+
+The problem, if any, with the template ending here.
+
+      public endProblem(): String? {
+        if (inCode) { null } else { "template ends inside a quote or comment" }
+      }
     }
+
+Hole kinds: a value, a name, or a nested query.
+
+    let holeValue = 0;
+    let holeName = 1;
+    let holeQuery = 2;
 
     let newLexer(dialect: Dialect): SqlLexer {
       let lexing = lexingName(dialect);
@@ -384,6 +413,8 @@ of it can't join into one token.
         new PostgresLexer(false)
       } else if (lexing == "duckdb") {
         new PostgresLexer(true)
+      } else if (lexing == "common") {
+        new CommonLexer()
       } else {
         new MysqlLexer()
       }

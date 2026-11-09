@@ -7,6 +7,8 @@ apart, and render for a dialect. Each database's own rules, query tag,
 and template lexer are in its file:
 [SQLite](sqlite.temper.md), [PostgreSQL](postgres.temper.md),
 [MySQL and MariaDB](mysql.temper.md), and [DuckDB](duckdb.temper.md).
+[The common dialect](common.temper.md), written once for all of them,
+has its own.
 
 ## Dialects
 
@@ -112,6 +114,14 @@ unsafe on a server without that mode.**
 
       public static mysqlNoBackslashEscapes: Dialect = doPure {
         new Dialect("mysqlNoBackslashEscapes", char'`', false, 0, 64, false, true)
+      };
+
+[The common dialect](common.temper.md): quotes as the shared core
+does, and takes only names every other profile takes, as `Identifier`
+does.
+
+      public static common: Dialect = doPure {
+        new Dialect("common", char'"', false, 63, 64, false, true)
       };
 
 ### Quoting names

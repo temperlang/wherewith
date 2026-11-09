@@ -192,10 +192,11 @@ is the same but for backtick names and a pass over Unicode spaces.
         problem
       }
 
-      public hole(): Void {
+      public hole(kind: Int): String? {
         before = -1;
         beforeThat = -1;
         afterEscape = -1;
+        null
       }
 
 Whitespace, and characters that can be part of a word, for this

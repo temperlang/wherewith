@@ -8,8 +8,9 @@ it for each, with values always bound as parameters. Underneath are
 the pieces a safe-composition framework, a query builder, or an admin
 tool needs: quoting and templates for each database, done right.
 
-The common dialect is [designed below](#the-common-dialect), for
-review, and not built yet; quoting and per-database templates are done.
+The common dialect is [designed below](#the-common-dialect), and being
+built: its tag and lexer are done, and its parser, checks, and
+rendering are next. Quoting and per-database templates are done.
 
 ## Goals
 
@@ -174,7 +175,8 @@ Done:
   same lexer, which refuses text the two modes read differently.
   `render` keeps its dialect argument for the
   [common dialect](#the-common-dialect), whose queries will render for
-  every database. Where a hole meets
+  every database; for now they render only for `Dialect.common`, as
+  written. Where a hole meets
   text it could merge with (`5-` and `-1`, `a` and `$1`, or two quoted
   names), rendering adds a space.
 - `QueryBuilder(dialect)`: makes a query from plain code, checking its
@@ -195,8 +197,18 @@ Done:
   executable comments, quotes in MySQL optimizer hints (`/*+ … */`),
   text that puts DuckDB's Unicode space pass out of step, and NUL
   anywhere in the text. Each dialect's file lists its rules.
+- The common dialect's first piece: `Dialect.common`, a profile that
+  quotes as the shared core does and takes only names `Identifier`
+  takes; and the `sql` tag (`SqlTag`), whose queries have that
+  dialect. Its lexer reads the template into tokens and refuses
+  anything outside the subset's lexical rules (below), with the line,
+  column, and an excerpt; holes are tokens of their kind, checked
+  only as far as the tokens beside them show. Common queries nest in
+  common templates, in parentheses, and render only for
+  `Dialect.common`, as written, until the parser lands.
 
-Next: the [common dialect](#the-common-dialect), designed below.
+Next: the rest of the [common dialect](#the-common-dialect): the
+parser, the check stage, and rendering for each database.
 
 Also planned:
 
@@ -210,7 +222,9 @@ Also planned:
 
 ## The common dialect
 
-Status: design for review (2026-11-07); nothing here is built yet.
+Status: designed (2026-11-07), with its open questions decided
+(2026-11-09, under [Decided](#decided)). Built: chunk 1 of the
+[plan](#plan), the lexer and tag.
 
 One query, written once, rendered for each database:
 
@@ -282,7 +296,7 @@ Deliberately later, each needing its own design:
 
 ### The tag and the API
 
-The `sql` tag (name open, below) gives a `Query` whose `dialect` is
+The `sql` tag gives a `Query` whose `dialect` is
 `Dialect.common`, a new profile that quotes as the shared core does
 and allows only names `Identifier` allows. Unlike other queries, a
 common query renders for every profile:
@@ -364,19 +378,28 @@ qname     = name ["." name]
 name      = BARE | QUOTED | NAME_HOLE
 ```
 
-Lexing rules: ASCII whitespace; `--` comments to a line feed, and
-`/* */` comments, with `/*` refused inside one (PostgreSQL and DuckDB
-nest them, SQLite and MySQL don't); bare names `[A-Za-z_][A-Za-z0-9_]*`
-that aren't keywords; quoted names `"…"` and strings `'…'`, with the
-quote doubled and no backslash escapes; integers and decimals (`12`,
-`1.5`, no exponents); and the operators above. Anything else outside
-quotes, such as `?`, `$`, `:`, `@`, `;`, backticks, `[`, `::`, or
+Lexing rules (built; `src/common.temper.md` has the details): ASCII
+whitespace (not vertical tab, which SQLite refuses); `--` comments to
+a line feed, with no lone carriage return in them (PostgreSQL and
+DuckDB end them there), and `/* */` comments, with `/*` refused inside
+one (PostgreSQL and DuckDB nest them, SQLite and MySQL don't), and no
+`/*!` or `/*+`; comments may hold anything but NUL, since they never
+reach the output. Bare names `[A-Za-z_][A-Za-z0-9_]*` that aren't
+keywords; keywords in any case, where function names, type names,
+`FIRST`, and `LAST` aren't reserved, and a few words for planned
+constructs are (`UNION`, `WITH`, `RETURNING`, and the like). Quoted
+names `"…"` and strings `'…'`, with the quote doubled, no backslash
+escapes, and no prefix (`E'…'`, `X'…'`, `_utf8mb4'…'`); integers and
+decimals (`12`, `1.5`, no exponents, and nothing running into them);
+and the operators above. Anything else outside quotes and comments,
+such as `?`, `$`, `:`, `@`, `;`, backticks, `[`, `::`, `==`, or
 non-ASCII characters, is refused, and NUL anywhere. Comparisons don't
 chain (`a = b = c` is refused), since targets parse chains
 differently or not at all.
 
 Errors say what was expected and where: a line and column in the
-template written with each hole as `${…}`, and a short excerpt.
+template written with each hole as `${…}`, and a short excerpt, as in
+`? outside quotes; put values in holes, at line 2, column 10:   ${…} + ?`.
 
 Speed and the backends:
 
@@ -407,7 +430,8 @@ gives the first problem with its position:
   (63 bytes for PostgreSQL; 64 characters, nothing above U+FFFF, no
   trailing whitespace, and no `#mysql50#` for MySQL; no NUL anywhere).
   Bare names must be lowercase, since PostgreSQL folds them while the
-  others don't (open question below); every name renders quoted.
+  others don't; every name renders quoted. (Built in the lexer, with
+  the string and number checks below.)
 - **Strings:** every string literal passes each target's
   `stringProblem` (no NUL except under MySQL's backslash escapes; no
   lone surrogates).
@@ -448,7 +472,7 @@ its own profile.
 | `a \|\| b` | `a \|\| b` | `a \|\| b` | `CONCAT(a, b)` | `a \|\| b` | Emulate: MySQL's `\|\|` is `OR` without `PIPES_AS_CONCAT`; `CONCAT` gives `NULL` on any `NULL`, as `\|\|` does |
 | `LIMIT n OFFSET m` | same | same | same | same | Same |
 | `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` | Emulate, as each manual says |
-| Default `NULL` order | smallest | largest | smallest | last, both directions | Common: smallest (open question); write `NULLS` where it differs |
+| Default `NULL` order | smallest | largest | smallest | last, both directions | Common: smallest; write `NULLS` where it differs |
 | `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x` | `NULLS` only where the default differs; on MySQL, which lacks it, emulate, repeating `x` and its parameters |
 | `CAST(x AS INTEGER)` | `INTEGER` | `BIGINT` | `SIGNED` | `BIGINT` | Type names map; float to integer truncates in SQLite and rounds in the others, and bad text gives 0 in SQLite and MySQL but fails in the others: documented |
 | `CAST(x AS DOUBLE)` | `REAL` | `DOUBLE PRECISION` | `DOUBLE` (MySQL 8.0.17) | `DOUBLE` | Map |
@@ -464,7 +488,7 @@ its own profile.
 | Comparison results | 1 and 0 | `true` and `false` | 1 and 0 | `true` and `false` | Document; adapters may convert |
 | `1.5` | a float | exact `numeric` | exact `DECIMAL` | exact `DECIMAL` | Document |
 | `AVG` of integers | float | `numeric` | `DECIMAL` | `DOUBLE` | Document |
-| A `$1` with no context | n/a | may fail: type unknown | n/a | n/a | Write a cast from the value's type (open question) |
+| A `$1` with no context | n/a | may fail: type unknown | n/a | n/a | Write a cast from the value's type, only there |
 | Subquery in `FROM` | alias optional | required before 16 | required | optional | Grammar requires an alias |
 
 Sources (to recheck, since the container's firewall blocked the
@@ -523,55 +547,14 @@ of ideas only); Wherewith copies none of their code or tables.
   templates (dropped, swapped, or inserted tokens and characters) must
   parse or fail with a position, never crash or hang.
 
-### Open questions for the common dialect
-
-1. **Tag name:** `sql`, `common`, `portable`, or `anysql`? Recommended:
-   `sql`, short and the obvious default; imports are explicit, so a
-   clash is local.
-2. **`NULL` order when `ORDER BY` doesn't say:** smallest (SQLite's and
-   MySQL's), largest (PostgreSQL's), or required? Recommended:
-   smallest, since that costs nothing on SQLite and MySQL, where the
-   emulation is slowest, and only an explicit `NULLS` on PostgreSQL
-   and DuckDB.
-3. **Bare names:** require lowercase, fold to lowercase, or write them
-   bare? Recommended: require lowercase and quote on output; folding
-   would hide mismatches with MySQL's case-sensitive table names, and
-   bare output needs every target's reserved words.
-4. **Division:** refuse `/` without a known float operand (a float
-   value, a decimal literal, or a `CAST` to `DOUBLE`), or only
-   document it? Recommended: refuse, and add integer division later
-   as a function (`/` in SQLite and PostgreSQL, `DIV` in MySQL, `//` in
-   DuckDB, all truncating).
-5. **`LIKE` without `ESCAPE`:** allow it only for literal patterns
-   without `\`, always require `ESCAPE`, or make `\` the common
-   default? Recommended: the first; a `\` default can't be written for
-   the default `mysql` profile in every mode.
-6. **`\` in string literals for the `mysql` profile:** refuse, bind
-   such literals as parameters, or accept the extra backslashes under
-   `NO_BACKSLASH_ESCAPES`? Recommended: refuse, with a hint to bind the
-   value; `mysqlNoBackslashEscapes` takes them.
-7. **Expression fragments:** let `sql"active AND age > ${n}"` parse as
-   an expression that nests where one goes, for dynamic filters?
-   Recommended: yes, right after statements.
-8. **PostgreSQL parameter types:** write `CAST($1 AS BIGINT)` and the
-   like, from the value's type, where nothing else gives one (the
-   select list, `COALESCE`, `CASE` results, and `||`)? Recommended:
-   yes, only there, checked by the engine tests.
-9. **`UPDATE` and `DELETE` without `WHERE`:** allow? Recommended:
-   allow, as SQL does; maybe an opt-in check later.
-10. **Collation:** document MySQL's case-insensitive comparisons, or
-    write `COLLATE utf8mb4_bin`? Recommended: document; the collation
-    is the schema's choice, and forcing one defeats indexes.
-11. **Minimum versions:** recommended: SQLite 3.30, the oldest
-    PostgreSQL still supported, MySQL 8.0.17 (tested on 8.4), MariaDB
-    10.6, and DuckDB 1.0, each tested on current releases.
-
 ### Plan
 
 Each chunk is one commit, tested on every backend:
 
-1. **Lexer and tag** (small, ~400 lines with tests): `Dialect.common`,
-   the `sql` tag, tokens, holes by kind, and errors with positions.
+1. **Lexer and tag** (done, 2026-11-09): `Dialect.common`, the `sql`
+   tag, tokens, holes by kind, and errors with positions. Common
+   queries render only for `Dialect.common`, as written, until
+   chunk 4.
 2. **Expressions** (medium, ~700): the tree, the expression parser,
    the canonical printer, and the depth limit.
 3. **Statements** (medium, ~600): `SELECT`, `INSERT`, `UPDATE`, and
@@ -805,3 +788,44 @@ Each has a recommendation, but stays open until decided.
 - **Spacing:** the space rendering adds beside a hole, as in `- ?`, is
   fine, even where it isn't needed.
 - **More databases:** DuckDB (done), then SQL Server, Oracle, and Db2.
+
+### The common dialect (2026-11-09)
+
+The general rule: the more compatible the better. Prefer choices that
+accept the most SQL that means the same on every target, and stay
+closest to standard SQL.
+
+1. **Tag name:** `sql`, short and the obvious default; imports are
+   explicit, so a clash is local.
+2. **`NULL` order** when `ORDER BY` doesn't say: smallest first, as
+   SQLite and MySQL do, so only PostgreSQL and DuckDB get an explicit
+   `NULLS` when rendering.
+3. **Bare names:** lowercase only, and always quoted on output; never
+   folded silently, which would hide mismatches with MySQL's
+   case-sensitive table names.
+4. **Division:** `/` is refused unless an operand is known to be a
+   float (a float value, a decimal literal, or a `CAST` to `DOUBLE`);
+   integer division comes later as a function.
+5. **`LIKE` without `ESCAPE`:** only for literal patterns with no `\`.
+6. **`\` in string literals:** refused for the default `mysql` profile,
+   with a hint to bind the value; `mysqlNoBackslashEscapes` takes them.
+   Every profile is a target by default, so for now the lexer refuses
+   them in every common template.
+7. **Expression fragments** (`sql"active AND age > ${n}"`): yes, right
+   after statements.
+8. **PostgreSQL parameter types:** casts only where a parameter's type
+   is unknown (the select list, `COALESCE`, `CASE` results, and `||`),
+   checked by the engine tests.
+9. **`UPDATE` and `DELETE` without `WHERE`:** allowed, as SQL does;
+   maybe an opt-in check later.
+10. **Collation:** MySQL's case-insensitive comparisons are documented,
+    not forced; the collation is the schema's choice, and forcing one
+    defeats indexes.
+11. **Minimum versions:** SQLite 3.30, the oldest PostgreSQL the
+    project still supports, MySQL 8.0.17, MariaDB 10.6, and DuckDB
+    1.0, each tested on current releases. MySQL 8.0 and MariaDB 10.6
+    are past their end of life, but staying compatible costs little.
+12. **Rendering before the parser:** a common query renders only for
+    `Dialect.common`, as written, and `render` bubbles for every
+    database ("isn't built yet") until the renderer lands, rather than
+    passing text through where it happens to be exact.

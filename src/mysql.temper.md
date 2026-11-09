@@ -163,7 +163,7 @@ The lexer keeps its state from one run of text to the next.
         problem
       }
 
-      public hole(): Void {}
+      public hole(kind: Int): String? { null }
     }
 
     let backslashProblem = "backslash before a quote or backslash in a string";
