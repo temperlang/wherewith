@@ -674,6 +674,16 @@ An operator, or a refused character.
         if (tokens.isEmpty) { null } else { tokens[tokens.length - 1] }
       }
 
+`frozen` copies the runs, which are all a parsed tree needs from the
+lexer to render, so a builder's query shares nothing the builder goes
+on changing.
+
+      public frozen(): CommonLexer {
+        let copy = new CommonLexer();
+        for (var i = 0; i < runs.length; i += 1) { copy.runs.add(runs[i]); }
+        copy
+      }
+
 `tokenText` is a token's text as written, or `${…}` for a hole.
 
       public tokenText(t: CommonToken): String {

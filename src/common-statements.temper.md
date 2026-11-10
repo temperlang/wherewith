@@ -1542,36 +1542,50 @@ are the default targets: every profile.
       [Dialect.sqlite, Dialect.postgres, Dialect.mysql, Dialect.mysqlNoBackslashEscapes, Dialect.duckdb]
     }
 
-`commonProblem` checks a whole template, already lexed, for its
-targets: its strings and names, then its grammar, then the checks. It
-gives the first problem, or null.
+`commonCheck` checks a whole template, already lexed, for its
+targets: its end, its strings and names, then its grammar, then the
+checks. It gives the first problem, or else the tree, for the query
+the builder makes, with its own copy of the lexer's text.
 
-    let commonProblem(lexer: CommonLexer, holes: List<QueryPart>, targets: List<Dialect>): String? {
-      let found = lexer.targetProblem(targets);
-      if (found != null) { return found; }
-      let parser = new CommonParser(lexer);
-      let tree: CommonStatement? = parser.parseStatement() orelse null;
-      if (tree != null) {
-        let checker = new CommonChecker(lexer, holes, targets);
-        let checked = do {
-          new StatementChecker(checker).statement(tree);
-          true
-        } orelse false;
-        if (checked) { null } else { checker.problem ?? "fails" }
-      } else {
-        parser.problem ?? "fails"
+    let commonCheck(
+      lexer: CommonLexer,
+      parts: List<QueryPart>,
+      holes: List<QueryPart>,
+      targets: List<Dialect>,
+    ): CommonCheck {
+      var problem = lexer.endProblem() ?? lexer.targetProblem(targets);
+      var common: CommonQuery? = null;
+      if (problem == null) {
+        let parser = new CommonParser(lexer);
+        let tree: CommonStatement? = parser.parseStatement() orelse null;
+        if (tree != null) {
+          let checker = new CommonChecker(lexer, holes, targets);
+          let checked = do {
+            new StatementChecker(checker).statement(tree);
+            true
+          } orelse false;
+          if (checked) {
+            common = new CommonQuery(lexer.frozen(), tree, holes, null);
+          } else {
+            problem = checker.problem ?? "fails";
+          }
+        } else {
+          problem = parser.problem ?? "fails";
+        }
       }
+      new CommonCheck(parts, targets, common, problem)
     }
 
-A common `Query` keeps a `CommonQuery`: its tree, parsed from its
-parts, or the problem that stopped it, and its holes.
+A common `Query` keeps a `CommonQuery`: its tree, or the problem that
+stopped its parse, and its holes. It's a `TemplateCheck`, an exported
+type, so `Query`'s constructor can take one.
 
     class CommonQuery(
       public lexer: CommonLexer,
       public statement: CommonStatement?,
       public holes: List<QueryPart>,
       public problem: String?,
-    ) {
+    ) extends TemplateCheck {
 
 `renderedFor` writes the tree for a dialect, in parts: text, with each
 name hole's name written in it, and each value as a `QueryParam`. For

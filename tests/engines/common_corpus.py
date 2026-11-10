@@ -39,6 +39,19 @@ PETS = [(1, "cat"), (1, "dog"), (2, "cat"), (9, "fish")]
 ERROR = "error"
 
 
+class Refused(str):
+    """ERROR, as an engine gave it: equal to ERROR, but carrying the
+    error's type and the first line of its message, for failures."""
+
+    def __new__(cls, err: BaseException):
+        refused = super().__new__(cls, ERROR)
+        refused.why = rt.describe(err)
+        return refused
+
+    def __repr__(self) -> str:
+        return f"error ({self.why})"
+
+
 @dataclass
 class Raw:
     """Expected Python types of a row's values, as the driver gives
@@ -219,8 +232,8 @@ def run(e, q, style_index: int = 0):
     r = q.render(e.dialect, st.style)
     try:
         return [tuple(row) for row in st.run(r)]
-    except Exception:  # noqa: BLE001
-        return ERROR
+    except Exception as err:  # noqa: BLE001
+        return Refused(err)
 
 
 def setup(e) -> None:
@@ -236,8 +249,10 @@ def setup(e) -> None:
         q = common("INSERT INTO people (id, name, nick, score, ratio, flag) VALUES (",
                    H(row[0]), ", ", H(row[1]), ", ", H(row[2]), ", ", H(row[3]), ", ", H(row[4]), ", ",
                    H(row[5]), ")")
-        if run(e, q) == ERROR:
-            rt.fail("corpus", f"inserting {row!r} failed: {q.render(e.dialect, e.styles()[0].style).sql!r}")
+        got = run(e, q)
+        if got == ERROR:
+            rt.fail("corpus", f"inserting {row!r} failed: {q.render(e.dialect, e.styles()[0].style).sql!r}"
+                    f" gave {got!r}")
     for row in PETS:
         run(e, common("INSERT INTO pets (owner, kind) VALUES (", H(row[0]), ", ", H(row[1]), ")"))
 
@@ -262,8 +277,8 @@ def check(e, seed: int, n: int) -> None:
             want = case.differs.get(name, case.rows)
             try:
                 q = common(*case.pieces)
-            except Exception:  # noqa: BLE001
-                rt.fail("corpus", f"{case.name}: the common query doesn't build")
+            except Exception as err:  # noqa: BLE001
+                rt.fail("corpus", f"{case.name}: the common query doesn't build ({rt.describe(err)})")
                 continue
             for i in range(len(e.styles())):
                 if not usable(e, q, i):
@@ -280,8 +295,9 @@ def check(e, seed: int, n: int) -> None:
         for pieces in WRITES:
             rt.count("corpus writes")
             q = common(*pieces)
-            if run(e, q) == ERROR:
-                rt.fail("corpus", f"{q.render(e.dialect, e.styles()[0].style).sql!r} failed")
+            got = run(e, q)
+            if got == ERROR:
+                rt.fail("corpus", f"{q.render(e.dialect, e.styles()[0].style).sql!r} gave {got!r}")
         got = run(e, common("SELECT id, v FROM scratch ORDER BY id"))
         if not matches(got, WRITTEN):
             rt.fail("corpus", f"after the writes, scratch has {got!r}, not {WRITTEN!r}")

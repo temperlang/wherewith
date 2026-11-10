@@ -165,8 +165,8 @@ Done:
   copy, so later changes to the caller's list can't make the parts
   and `params` disagree.
   Temper's private constructors are still public in some backends, a
-  known limitation, so `new Query(dialect, parts, targets)` may be
-  callable there, with the same danger. `targets` lists the databases
+  known limitation, so the constructor may be callable there, with
+  the same danger. `targets` lists the databases
   a common query was checked for and renders for (just its dialect for
   a database's query); `unchecked` takes them too, every database by
   default.
@@ -317,9 +317,12 @@ and allows only names `Identifier` allows. Unlike other queries, a
 common query renders for every profile:
 
 - **Parts and tree.** `parts` keeps the template as written, and the
-  query also holds its syntax tree, privately, built at construction.
-  `Query.unchecked(Dialect.common, parts)` parses too, since rendering
-  needs the tree.
+  query also holds its syntax tree, privately. A builder's query keeps
+  the tree its checks parsed, handed over through `Query.checked` and
+  an opaque `TemplateCheck`, since the builder can't call `Query`'s
+  private constructor, so a template is parsed once.
+  `Query.unchecked(Dialect.common, parts)` parses its parts, since
+  rendering needs the tree.
 - **Rendering.** `render(dialect, style)` checks the query for that
   dialect, writes the tree as parts for it, and then renders those as
   any query (spacing, `%` doubling, and the named-marker check), so

@@ -41,8 +41,10 @@ text; the constructor is private. It keeps its own copy of the parts
 (free when they're already a `List`), so a caller that goes on
 changing its list can't make the parts and `params` disagree.
 
-A common query also keeps its syntax tree, privately, parsed from its
-parts when it's made, since rendering writes from the tree.
+A common query also keeps its syntax tree, privately, since rendering
+writes from the tree: from a `QueryBuilder`, the tree its checks
+parsed, so the template is parsed once; from `unchecked`, parsed from
+its parts.
 
     export class Query {
       public dialect: Dialect;
@@ -51,13 +53,15 @@ parts when it's made, since rendering writes from the tree.
       public targets: List<Dialect>;
       private common: CommonQuery?;
 
-      private constructor(dialect: Dialect, parts: Listed<QueryPart>, targets: List<Dialect>) {
-        let own = parts.toList();
+      // `tree` is a common query's `CommonQuery`, typed as the exported
+      // `TemplateCheck`, since some backends make this constructor public.
+      private constructor(dialect: Dialect, parts: List<QueryPart>, targets: List<Dialect>, tree: TemplateCheck?) {
+        let own = parts;
+        let common = if (tree is CommonQuery) { tree } else { null };
         let params = new ListBuilder<SqlValue>();
         for (let part of own) {
           if (part is QueryParam) { params.add(part.value); }
         }
-        let common = if (dialect.name == "common") { parsedCommon(own) } else { null };
         this.dialect = dialect;
         this.parts = own;
         this.params = params.toList();
@@ -77,12 +81,28 @@ don't parse can't render. A common query's `targets` are those given,
 or else every database.
 
 Temper's private constructors still come out public in some backends
-(a known limitation, for now), so there `new Query(dialect, parts)` is
+(a known limitation, for now), so there the constructor is
 callable too, with the same danger; use `unchecked`, which says so.
 
       public static unchecked(dialect: Dialect, parts: Listed<QueryPart>, targets: List<Dialect>? = null): Query {
-        let own = if (dialect.name != "common") { [dialect] } else { targets ?? commonTargets() };
-        new Query(dialect, parts, own)
+        let own = parts.toList();
+        if (dialect.name != "common") { return new Query(dialect, own, [dialect], null); }
+        new Query(dialect, own, targets ?? commonTargets(), parsedCommon(own))
+      }
+
+`checked` is how a common `QueryBuilder` hands over a template it has
+checked, with the tree its checks parsed, so `build` doesn't parse it
+again. Only a builder makes a `TemplateCheck`, and only one that passed
+makes a query; anything else bubbles. Use a `QueryBuilder` or a tag.
+
+      public static checked(check: TemplateCheck): Query throws Bubble {
+        if (check is CommonCheck) {
+          let common = check.common;
+          if (check.problem == null && common != null) {
+            return new Query(Dialect.common, check.parts, check.targets, common);
+          }
+        }
+        bubble()
       }
 
 ### Rendering
@@ -214,6 +234,22 @@ text; for others, its own parts. It bubbles as `render` does.
         new WrittenQuery(written, null)
       }
     }
+
+`TemplateCheck` is a builder's check of a whole template, or a common
+query's tree, opaque outside Wherewith: see `Query.checked`.
+
+    export sealed interface TemplateCheck {}
+
+`CommonCheck` is a common template's: its parts and targets, then
+either its tree, from the parse its checks ran on, or the first
+problem.
+
+    class CommonCheck(
+      public parts: List<QueryPart>,
+      public targets: List<Dialect>,
+      public common: CommonQuery?,
+      public problem: String?,
+    ) extends TemplateCheck {}
 
 `WrittenQuery` holds the parts a query renders as, or why it can't.
 
@@ -382,11 +418,9 @@ let q = b.build() orelse panic();
       private var pending: StringBuilder;
       private var hasPending: Boolean;
       private var problem: String?;
-      // For the common dialect, whether `wholeProblem` holds the whole
-      // template's check, done since the template or targets last
-      // changed.
-      private var checked: Boolean;
-      private var wholeProblem: String?;
+      // For the common dialect, the whole template's check, if done
+      // since the template or targets last changed.
+      private var check: CommonCheck?;
 
       public constructor(dialect: Dialect) {
         let lexer = newLexer(dialect);
@@ -399,8 +433,7 @@ let q = b.build() orelse panic();
         this.pending = new StringBuilder();
         this.hasPending = false;
         this.problem = null;
-        this.checked = false;
-        this.wholeProblem = null;
+        this.check = null;
       }
 
 `targets` are the databases a common query must mean the same on. Set
@@ -423,7 +456,7 @@ which MySQL's default profile reads as an escape, is fine for
             }
           }
           targetList = value;
-          checked = false;
+          check = null;
         }
       }
 
@@ -494,7 +527,7 @@ start and end.
           return;
         }
         if (x.dialect.name != "common") { return; }
-        checked = false;
+        check = null;
         common.beginQuery();
         for (let p of x.parts) {
           when (p) {
@@ -520,7 +553,7 @@ start and end.
       }
 
       private added(part: QueryPart): Void {
-        checked = false;
+        check = null;
         parts.add(part);
         if (common != null) { holes.add(part); }
       }
@@ -532,6 +565,9 @@ start and end.
           flush();
         }
         if (templateProblem != null) { bubble() }
+        // A common template's check is done, by `templateProblem`.
+        let check = this.check;
+        if (check != null) { return Query.checked(check); }
         Query.unchecked(dialect, parts, targetList)
       }
 
@@ -545,18 +581,15 @@ and the checks find, such as `/` without a float operand. Reading it
 doesn't change the builder, so more can be added after; a template
 that's only half written reads as one that ends there. A common
 template's parse and checks run once, when it or `build` first needs
-them, and again only after more is added or the targets change.
+them, and again only after more is added or the targets change; `build`
+makes its query from that same parse.
 
       public get templateProblem(): String? {
         flush();
         if (problem != null) { return problem; }
         let common = this.common;
         if (common != null) {
-          if (!checked) {
-            wholeProblem = common.endProblem() ?? commonProblem(common, holes.toList(), targetList);
-            checked = true;
-          }
-          wholeProblem
+          checkedCommon(common).problem
         } else if (lexer.inLineComment) {
           // `build` ends a line comment, so the template doesn't end
           // in one.
@@ -566,12 +599,20 @@ them, and again only after more is added or the targets change.
         }
       }
 
+      private checkedCommon(common: CommonLexer): CommonCheck {
+        let done = check;
+        if (done != null) { return done; }
+        let made = commonCheck(common, parts.toList(), holes.toList(), targetList);
+        check = made;
+        made
+      }
+
       private flush(): Void {
         if (!hasPending) { return; }
         let text = pending.toString();
         pending = new StringBuilder();
         hasPending = false;
-        checked = false;
+        check = null;
         let found = lexer.scan(text);
         if (found != null) { fail(found); }
         if (hasCodePoint(text, 0)) { fail("NUL in template text"); }

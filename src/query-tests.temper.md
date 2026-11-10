@@ -396,6 +396,12 @@ check.
       let q = b.build() orelse panic();
       assert(qmarks(q) == "SELECT \"name\" FROM \"users\" WHERE \"id\" IN (?, ?)");
       assert(b.templateProblem == null);
+      // The query keeps the builder's parse, which more text can't
+      // change, and only a passed check makes a query.
+      b.appendSafe(" ORDER BY name");
+      assert(qmarks(b.build() orelse panic()) == "SELECT \"name\" FROM \"users\" WHERE \"id\" IN (?, ?) ORDER BY \"name\"");
+      assert(qmarks(q) == "SELECT \"name\" FROM \"users\" WHERE \"id\" IN (?, ?)");
+      assert(!(do { Query.checked(new CommonCheck(q.parts, q.targets, null, "no")); true } orelse false));
 
       // A null value at = is a check, so it shows before build too.
       let nulled = new QueryBuilder(Dialect.common);

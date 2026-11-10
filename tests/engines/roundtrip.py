@@ -60,6 +60,12 @@ def fail(kind: str, message: str) -> None:
     failures.append(f"[{kind}] {message}")
 
 
+def describe(err: BaseException) -> str:
+    """An exception's type and the first line of its message."""
+    lines = str(err).strip().splitlines()
+    return f"{type(err).__name__}: {lines[0] if lines else ''}"
+
+
 def short(s: str, n: int = 60) -> str:
     r = repr(s)
     return r if len(r) <= n else f"{r[:n]}... ({len(s)} chars)"
@@ -413,7 +419,7 @@ def check_strings(e: Engine, inputs: list[str], label: str = "strings") -> None:
         try:
             got = e.read_string(q)
         except Exception as err:  # noqa: BLE001
-            fail(label, f"SELECT {short(q)} failed: {err!r}")
+            fail(label, f"SELECT {short(q)} failed: {describe(err)}")
             continue
         if not (isinstance(got, str) and got == want):
             fail(label, f"SELECT {short(q)} gave {short(str(got))}, not {short(want)}")
@@ -437,7 +443,7 @@ def check_strings(e: Engine, inputs: list[str], label: str = "strings") -> None:
             if got != [(want, s, want)]:
                 fail(label, f"builder with {short(q)} gave {short(repr(got))}")
         except Exception as err:  # noqa: BLE001
-            fail(label, f"builder with {short(q)} failed: {err!r}")
+            fail(label, f"builder with {short(q)} failed: {describe(err)}")
 
 
 # 2. Names
@@ -490,7 +496,7 @@ def check_names(e: Engine, inputs: list[str]) -> None:
                 if e.result_name(description) != n:
                     fail("names", f"result column for {short(n)} is {short(e.result_name(description))}")
         except Exception as err:  # noqa: BLE001
-            fail("names", f"using {short(n)} failed: {err!r}")
+            fail("names", f"using {short(n)} failed: {describe(err)}")
 
 
 def name_piece(name: str, quoted: str):
@@ -558,7 +564,7 @@ def check_params(e: Engine, strings: list[str]) -> None:
                     if not (len(got) == 1 and same_row(got[0], want, ex)):
                         fail("params", f"{st.name}: {short(str(py_value(v)))} came back as {got!r}, not {want!r}")
                 except Exception as err:  # noqa: BLE001
-                    fail("params", f"{st.name}: {short(str(py_value(v)))} failed: {err!r}")
+                    fail("params", f"{st.name}: {short(str(py_value(v)))} failed: {describe(err)}")
             # Many values in one query, numbered straight through.
             for start in range(0, len(values), 200):
                 chunk = values[start : start + 200]
@@ -576,7 +582,7 @@ def check_params(e: Engine, strings: list[str]) -> None:
                         if not same(g, e.expected_row(v)[0], ex):
                             fail("params", f"{st.name} batch: {short(str(py_value(v)))} came back as {short(str(g))}")
                 except Exception as err:  # noqa: BLE001
-                    fail("params", f"{st.name} batch at {start} failed: {err!r}")
+                    fail("params", f"{st.name} batch at {start} failed: {describe(err)}")
             # Through a table.
             e.execute("DELETE FROM v")
             for i, v in enumerate(values):
@@ -589,7 +595,7 @@ def check_params(e: Engine, strings: list[str]) -> None:
                 try:
                     st.run(b.build().render(d, st.style))
                 except Exception as err:  # noqa: BLE001
-                    fail("params", f"{st.name} insert of {short(str(py_value(v)))} failed: {err!r}")
+                    fail("params", f"{st.name} insert of {short(str(py_value(v)))} failed: {describe(err)}")
             rows = {r[0]: r[1:] for r in e.execute(e.values_select)}
             count("params table rows", len(rows))
             for i, v in enumerate(values):
@@ -612,21 +618,21 @@ def check_nesting(e: Engine) -> None:
                 count("nesting")
                 try:
                     r = q.render(d, st.style)
-                except Exception:  # noqa: BLE001
+                except Exception as err:  # noqa: BLE001
                     sql = q.render(d, ww.PlaceholderStyle.question).sql
                     marker = {ww.PlaceholderStyle.colon_named: ":", ww.PlaceholderStyle.at_named: "@"}.get(st.style)
                     if marker and marker in sql:
                         # Named styles refuse text holding their marker.
                         count("nesting refused by design")
                     else:
-                        fail("nesting", f"{st.name}: rendering {sql!r} failed")
+                        fail("nesting", f"{st.name}: rendering {sql!r} failed: {describe(err)}")
                     continue
                 try:
                     got = st.run(r)
                     if not (len(got) == len(want) and all(same_row(g, w) for g, w in zip(got, want, strict=True))):
                         fail("nesting", f"{st.name}: {r.sql!r} gave {got!r}, not {want!r}")
                 except Exception as err:  # noqa: BLE001
-                    fail("nesting", f"{st.name}: {r.sql!r} failed: {err!r}")
+                    fail("nesting", f"{st.name}: {r.sql!r} failed: {describe(err)}")
     finally:
         e.nesting_teardown()
 
@@ -691,7 +697,7 @@ def check_random_templates(e: Engine, strings: list[str], seed: int, n: int) -> 
             if not (len(got) == 1 and list(got[0]) == want):
                 fail("random", f"{st.name}: {r.sql!r} gave {got!r}, not {want!r}")
         except Exception as err:  # noqa: BLE001
-            fail("random", f"{st.name}: {r.sql!r} failed: {err!r}")
+            fail("random", f"{st.name}: {r.sql!r} failed: {describe(err)}")
 
 
 # Running
