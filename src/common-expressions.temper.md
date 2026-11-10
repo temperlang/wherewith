@@ -50,9 +50,9 @@ refuses it rather than pick one reading:
   bare name must.
 - **Functions:** `ABS`, `AVG`, `COALESCE` (2 or more arguments),
   `COUNT`, `LENGTH`, `LOWER`, `MAX`, `MIN`, `NULLIF`, `REPLACE`,
-  `SUBSTR` (2 or 3), `SUM`, `TRIM` (1, since MySQL's second argument is
-  a string to remove and the others' a set of characters), and
-  `UPPER`. `DISTINCT` goes only in an aggregate (`AVG`, `COUNT`,
+  `SUBSTR` (2 or 3), `SUM`, `TRIM` (1, since the others take a set of
+  characters to remove as a second argument, and MySQL takes none: its
+  `TRIM(r FROM s)` removes a whole string), and `UPPER`. `DISTINCT` goes only in an aggregate (`AVG`, `COUNT`,
   `MAX`, `MIN`, and `SUM`), and `*` only in `COUNT(*)`.
 - **Holes by kind:** a value goes wherever an expression does; a name
   only in a column (`${t}.${c}`); and a nested query, which must be a
@@ -908,7 +908,7 @@ unknown for columns and nested queries. The checker refuses:
   `AVG`, or a `CAST` to `DOUBLE`, or arithmetic on one), since SQLite
   and PostgreSQL divide integers to an integer; `%` with a float,
   which SQLite truncates; and `/` or `%` by a literal zero, which
-  gives `NULL`, an error, or infinity.
+  gives `NULL`, an error, infinity, or NaN.
 - **Floats written as text:** a float in `||` or cast to `TEXT`, which
   the databases write differently (`1.0` or `1`, say), and a float cast
   to `INTEGER`, which SQLite truncates and the others round.

@@ -403,8 +403,9 @@ place among the template's holes. Where the databases read the same
 text differently, the parser refuses it: predicates don't chain
 (`a = b IS NULL` too), `||` beside arithmetic needs parentheses,
 names have at most two parts (DuckDB can read a third as a field),
-`TRIM` takes one argument (MySQL's second is a string to remove, the
-others' a set of characters), `DISTINCT` goes only in aggregates, and
+`TRIM` takes one argument (the others take a set of characters to
+remove as a second, and MySQL none: its `TRIM(r FROM s)` removes a
+whole string), `DISTINCT` goes only in aggregates, and
 a nested query goes only in its own parentheses. A printer writes the
 tree back as canonical common SQL, with only the parentheses needed.
 
@@ -596,22 +597,22 @@ would check it, so a value can't land in a quote or comment.
 | `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` (refuses `LIMIT -1`) | Emulate, as each manual says |
 | Default `NULL` order | smallest | largest | smallest | last, both directions, unless `default_null_order` says otherwise | Common: smallest |
 | `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x NULLS LAST` | `NULLS` where the default differs, and always for DuckDB, whose default is a setting; MySQL, which lacks it, sorts by `x IS NULL` first, repeating `x` and its values (for a place or an alias, its item) |
-| `CAST(x AS INTEGER)` | `INTEGER` | `BIGINT` | `SIGNED` | `BIGINT` | Type names map; float to integer truncates in SQLite and rounds in the others, and text reads as its leading number in SQLite and MySQL (`'12abc'` is 12, `'Al'` is 0) but fails in the others: documented |
+| `CAST(x AS INTEGER)` | `INTEGER` | `BIGINT` | `SIGNED` | `BIGINT` | Type names map; floats and decimals to integer truncate in SQLite and round in the others (a float's halves to even, a decimal's away from zero), and text reads as its leading number in SQLite and MySQL (`'12abc'` is 12, `'Al'` is 0) but fails in the others: documented |
 | `CAST(x AS DOUBLE)` | `REAL` | `DOUBLE PRECISION` | `DOUBLE` (MySQL 8.0.17) | `DOUBLE` | Map |
 | `CAST(x AS TEXT)` | `TEXT` | `TEXT` | `CHAR` | `VARCHAR` | Map |
 | `LIKE p ESCAPE '!'` | same | same | same | same | Same; refuse `\` and `'` as the escape (MySQL's backslash mode) |
 | `LIKE p`, no `ESCAPE` | no escape | `\` escapes | `\` escapes (none under `NO_BACKSLASH_ESCAPES`) | no escape | Allow only a literal pattern without `\` |
 | `LIKE` case | ASCII-insensitive | sensitive | per collation, usually insensitive | sensitive | Document |
 | `7 / 2` | 3 | 3 | 3.5000 | 3.5 | Refuse without a known float operand; integer division later as a function |
-| `x / 0` | `NULL` | error | `NULL` (error in strict-mode writes) | `inf`; `%` fails | Document |
+| `x / 0` | `NULL` | error | `NULL` (error in strict-mode writes) | `inf` (`nan` for `0 / 0`); `%` fails on integers and gives `nan` on floats | Document |
 | `LENGTH(s)` | `length` | `length` | `CHAR_LENGTH` (`LENGTH` counts bytes) | `length` | Map |
 | `UPPER`, `LOWER` | ASCII only (without ICU) | full | full | full | Document |
-| `'a' = 'A'`, trailing spaces | binary | per collation, usually binary | per collation: default ones ignore case, and `PAD SPACE` ones trailing spaces | binary | Document; collation is data |
+| `'a' = 'A'`, trailing spaces | binary | per collation, usually binary | per collation: default ones ignore case, and `PAD SPACE` ones trailing spaces; MariaDB 11.8's default, `utf8mb4_uca1400_ai_ci`, ignores accents too | binary | Document; collation is data |
 | Comparison results | 1 and 0 | `true` and `false` | 1 and 0 | `true` and `false` | Document; adapters may convert |
 | `1.5` | a float | exact `numeric` | exact `DECIMAL` | exact `DECIMAL` | Document |
 | `AVG` of integers | float | `numeric` | `DECIMAL` | `DOUBLE` | Document |
 | `SUM` of integers | integer | `numeric` | `DECIMAL` | `HUGEINT` (128 bits) | Document |
-| A `$1` with no context | n/a | may fail: type unknown | n/a | n/a | Cast to the value's type alone in a `SELECT` list, and among `CASE` results or `COALESCE` or `NULLIF` arguments when nothing else there has a type |
+| A `$1` with no context | n/a | sent untyped, read as text (from 10; before, it fails) | n/a | n/a | Cast to the value's type alone in a `SELECT` list, and among `CASE` results or `COALESCE` or `NULLIF` arguments when nothing else there has a type |
 | Subquery in `FROM` | alias optional | required before 16 | required | optional | Grammar requires an alias |
 
 Sources (to recheck, since the container's firewall blocked the
@@ -641,17 +642,16 @@ and [casting](https://duckdb.org/docs/current/sql/expressions/cast).
 The engine corpus (`tests/engines/common_corpus.py`, under
 [Testing](#testing)) pins the rows: it runs on SQLite 3.45.1 and
 DuckDB 2.0.0 locally and in CI's `py` job, and on PostgreSQL 18 and
-MariaDB 11.8 in its `engines` job, so the PostgreSQL and MySQL columns,
-from the manuals, are confirmed there. Checked on SQLite and DuckDB
-(2026-11-09):
+MariaDB 11.8 in its `engines` job; [engine checks](#engine-checks) has
+each row's status. Checked on SQLite and DuckDB (2026-11-09):
 
 - **Confirmed:** `OFFSET` alone (and DuckDB refuses `LIMIT -1`), the
   default `NULL` orders (DuckDB's last in both directions), `NULLS
   FIRST` and `LAST`, the cast type names, `||` on numbers (`1 || 2` is
   `'12'` in both), `LIKE`'s case, `7 / 2`, `x / 0` (and `%` by zero
-  failing in DuckDB), float to integer (SQLite truncates, DuckDB rounds
-  half away from zero), `LOWER` past ASCII, comparison results, `1.5`'s
-  type, and `AVG`'s.
+  failing in DuckDB), float to integer (SQLite truncates, DuckDB
+  rounds, its halves as [engine checks](#engine-checks) says),
+  `LOWER` past ASCII, comparison results, `1.5`'s type, and `AVG`'s.
 - **Corrected:** SQLite reads text cast to `INTEGER` as its leading
   number (`'12abc'` is 12), not 0; DuckDB's `NULL` order is a setting,
   so rendering always writes `NULLS` for it; DuckDB's `SUM` of integers
@@ -664,6 +664,71 @@ differs. Prior art compiles one tree per dialect the same way (SQLGlot,
 SQLAlchemy, Knex, and jOOQ, whose commercial dialects make it a source
 of ideas only); Wherewith copies none of their code or tables.
 
+### Engine checks
+
+Each rule above that came from the manuals is a case in the engine
+corpus (`tests/engines/common_corpus.py`): a common query; one built
+unchecked, for what the checks refuse; or, for what the parser
+refuses, SQL run on the engine as written. Each case names its claim
+here, so a failing run says which row to fix. SQLite 3.45.1 and DuckDB
+2.0.0 run locally and in CI's `py` job, and PostgreSQL 18 and MariaDB
+11.8 in its `engines` job. *Pending CI* means a case expects what the
+manuals say, and CI's next run confirms it or names the row to correct.
+Neither MySQL itself nor MariaDB 10.6 is in CI, so claims about them
+alone stay unconfirmed. (2026-11-10)
+
+Rendering, from the [table](#rendering-per-dialect):
+
+| Row | SQLite and DuckDB | PostgreSQL and MariaDB |
+| --- | --- | --- |
+| `\|\|`: casts, `CONCAT`, and integers beside text (`'a' \|\| 1` is `'a1'`) | Confirmed | Confirmed |
+| `TRUE` and `FALSE`, `LIMIT` and `OFFSET`, and `OFFSET` alone (`LIMIT 18446744073709551615`) | Confirmed | Confirmed |
+| `NULL` order, and `NULLS` (`x IS NULL, x` for MySQL) | Confirmed | Confirmed |
+| `ORDER BY c`, qualified for PostgreSQL | Confirmed | Confirmed |
+| `CAST` type names, and text that isn't a number | Confirmed | Confirmed |
+| `CAST` of a float or decimal to `INTEGER` | Corrected: DuckDB rounds a float's halves to even (`7.5` is 8, `10.5` is 10) and a decimal's away from zero; SQLite truncates both | Pending CI: the same as DuckDB |
+| `LENGTH` (`CHAR_LENGTH`), and `UPPER` and `LOWER` past ASCII | Confirmed | Confirmed; PostgreSQL's locale, `en_US.utf8` in its image, pending CI |
+| `LIKE` with `ESCAPE`, and `LIKE`'s case | Confirmed | Confirmed |
+| `LIKE` without `ESCAPE`, with a `\` | Confirmed | Pending CI, in every MariaDB mode |
+| `7 / 2` | Confirmed | Pending CI |
+| `x / 0` | Corrected: DuckDB's `/` gives `inf` (`nan` for `0 / 0`) on integers too, and `%` fails only on integers, giving `nan` on floats | Confirmed for floats; integers and `%` pending CI |
+| `'a' = 'A'`, trailing spaces | Confirmed | Case confirmed; MariaDB's default collation (`utf8mb4_uca1400_ai_ci`), ignoring accents and trailing spaces, pending CI |
+| Comparison results, `1.5`, `AVG`, and `SUM` | Confirmed | Confirmed |
+| A `$1` with no context | n/a | Corrected, pending CI: sent untyped, PostgreSQL reads it as text, so a number comes back as text; the casts give values their types. Casts alone, in `COALESCE`, `CASE`, and `\|\|` confirmed; in `NULLIF` pending CI |
+| Subquery in `FROM` | Confirmed: no alias needed | Pending CI: MariaDB needs one; PostgreSQL 18 doesn't |
+
+Expression rules, from the [parser](#the-parser) and the
+[checks](#the-check-stage):
+
+| Rule | SQLite and DuckDB | PostgreSQL and MariaDB |
+| --- | --- | --- |
+| `\|\|` beside arithmetic | Confirmed: SQLite reads `1 + 2 \|\| 'a'` as `1 + (2 \|\| 'a')`, which is 3, and DuckDB as `'3a'` | Pending CI (MariaDB's `\|\|` is `OR`) |
+| `TRIM`'s second argument | Confirmed: a set of characters; SQLite has no `TRIM(r FROM s)`, and DuckDB reads `r` there as a set too | Corrected, pending CI: PostgreSQL takes a set, and MySQL and MariaDB no second argument, but `TRIM(r FROM s)`, removing a whole string |
+| `%` with a float | Confirmed: SQLite truncates (`5.5 % 2` is 1.0) | Pending CI (PostgreSQL has no `%` for `DOUBLE PRECISION`) |
+| Floats in `\|\|` or cast to `TEXT` | Confirmed: both write `2.0`, and SQLite 15 digits | Pending CI: `2` |
+| Booleans in `\|\|` and casts | Confirmed: `1` in SQLite, `true` in DuckDB | Pending CI: `true` in PostgreSQL, which casts a boolean only to text and 32-bit integers, and `1` in MariaDB |
+| `ESCAPE` before an ordinary character | Confirmed alike: it matches the character (refused anyway, as a likely mistake) | Pending CI: alike |
+| `ESCAPE` at the end of a pattern | Confirmed: SQLite matches nothing, DuckDB fails | Pending CI: PostgreSQL fails, MariaDB reads it as itself |
+| Text in arithmetic | Confirmed: SQLite converts (`'1' + 1` is 2, `'Al' + 1` is 1); DuckDB refuses, but reads a string beside a `DOUBLE` as one | Pending CI: PostgreSQL types a string literal from the other operand (`'1' + 1` is 2, `'1.5' + 1` fails) and refuses text columns; MariaDB converts |
+
+Statement rules, from the [parser](#the-parser) and the
+[checks](#the-check-stage):
+
+| Rule | SQLite and DuckDB | PostgreSQL and MariaDB |
+| --- | --- | --- |
+| Clauses without `FROM` (`WHERE`, `ORDER BY`, `LIMIT`) | Confirmed: taken | Pending CI: taken by MariaDB 11.8; MySQL 8.0 and MariaDB 10.6 unconfirmed |
+| A subquery reading the table an `UPDATE` or `DELETE` changes | Confirmed: taken | Pending CI: taken by MariaDB (from 10.3); MySQL's error 1093 unconfirmed |
+| The same in `INSERT … VALUES` | Confirmed: taken | Pending CI: MariaDB refuses it too |
+| `LIMIT` in an `IN` subquery | Confirmed: taken | Pending CI: MariaDB refuses it |
+| `*` beside other items | Confirmed: taken | Pending CI: MariaDB takes `*, a` and refuses `a, *`; if so, and MySQL agrees, the check could refuse only the second |
+| Alias or column, in `WHERE` and `GROUP BY`, and in `HAVING` for a grouped column | Confirmed: the column | Pending CI: the column |
+| The same in `HAVING`, for a column not grouped | Confirmed they differ: SQLite reads the column, DuckDB the alias | Pending CI: PostgreSQL fails, MariaDB reads the alias |
+| The same inside `ORDER BY` expressions | Confirmed: the column | Pending CI: PostgreSQL the column, MariaDB the alias |
+| Constants in `ORDER BY` and `GROUP BY` | Confirmed: SQLite skips `'a'` and `1.5` but reads `-1` as a place, failing; DuckDB refuses `'a'` and `1.5`, and reads `-1` as a place too; both group everything by `'a'` | Pending CI: PostgreSQL refuses all three and `GROUP BY 'a'`; MariaDB skips all three |
+| `SELECT DISTINCT` ordered by a column not selected | Confirmed: taken, in different orders | Pending CI: PostgreSQL refuses it, MariaDB takes it; MySQL 8.0 unconfirmed |
+| `ON` reading a table joined after it | Confirmed: SQLite takes it, DuckDB fails | Pending CI: both fail |
+| A column twice in `INSERT` or `SET` | Confirmed: SQLite takes both, DuckDB refuses both | Pending CI: PostgreSQL refuses both; MariaDB refuses `INSERT` and assigns `SET` left to right |
+
 ### Testing
 
 - **Unit tests in Temper**, on every backend: each construct's
@@ -675,12 +740,14 @@ of ideas only); Wherewith copies none of their code or tables.
   in `tests/engines/` against a fixture table with `NULL`s, negative
   numbers, mixed case, trailing spaces, and non-ASCII text, on SQLite
   and DuckDB in the `py` job and PostgreSQL and MariaDB in the
-  `engines` job, plus a MySQL 8.4 service container (next). Results
+  `engines` job, and maybe a MySQL 8.4 service container. Results
   are normalized (booleans to integers, decimals to floats) and must
   match across engines; documented differences are asserted to still
   differ, so the table above can't go stale. Built: the corpus in
   `common_corpus.py`, which each runner runs, with random queries
-  rendered for the engine and checked against SQLite.
+  rendered for the engine and checked against SQLite, and the
+  [engine checks](#engine-checks): cases built unchecked and SQL run
+  as written, for what the checks and the parser refuse.
 - **Fuzzing,** seeded in CI and longer locally: a grammar-based
   generator makes random subset queries that must parse, print back
   canonically to the same tree, render for each target, be accepted
@@ -711,7 +778,9 @@ Each chunk is one commit, tested on every backend:
    and at render.
 6. **Engines** (medium): the rest of the rules from manuals confirmed
    on PostgreSQL and MariaDB in CI, a MySQL service, and the statement
-   rules' corpus.
+   rules' corpus. Cases written (2026-11-10), confirmed on SQLite and
+   DuckDB, and pending CI on PostgreSQL and MariaDB; see
+   [engine checks](#engine-checks).
 7. **Fuzzing** (small to medium): the generator and mutations.
 8. **Docs** (done, 2026-11-09): the README, the site, and the demos
    lead with the common dialect.

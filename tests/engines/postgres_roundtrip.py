@@ -103,7 +103,7 @@ class Postgres(rt.Engine):
         return "\x00" not in s and not rt.has_surrogate(s)
 
     def hole_text(self):
-        # A parameter's type can't be inferred from `SELECT $1` alone.
+        # Nothing types a parameter alone in `SELECT $1`, so cast it.
         return "CAST(", " AS text)"
 
     # Longer names are truncated, so two could become one.
@@ -271,16 +271,21 @@ class Postgres(rt.Engine):
             except (self.psycopg.Error, ValueError) as err:
                 notes.append(f"{label} rejected ({type(err).__name__})")
         # Why common queries cast a value alone in a SELECT list: psycopg
-        # sends text untyped, as `pg` sends every value, and the server
-        # can't type `SELECT $1` from that alone. The cast must work.
-        for label, sql in [("an untyped value alone", "SELECT %s"), ("a value cast to text", "SELECT CAST(%s AS TEXT)")]:
+        # sends text untyped, as `pg` sends every value. PostgreSQL 10
+        # and later read an untyped value alone as text (older versions
+        # can't type it), so a number sent that way comes back as text;
+        # the cast gives it its type.
+        claim = "[docs/design.md: rendering table, a `$1` with no context]"
+        for label, sql, want in [("an untyped value alone", "SELECT %s", "7"),
+                                 ("an untyped value cast", "SELECT CAST(%s AS BIGINT)", 7)]:
             try:
-                got = self.execute(sql, ["x"])
-                notes.append(f"{label} gives {got[0][0]!r}")
+                got = self.execute(sql, ["7"])[0][0]
+                notes.append(f"{label} gives {got!r}")
+                if got != want or type(got) is not type(want):
+                    rt.fail("limits", f"{label} gave {got!r}, not {want!r} {claim}")
             except self.psycopg.Error as err:
                 notes.append(f"{label} fails ({type(err).__name__})")
-                if "CAST" in sql:
-                    rt.fail("limits", f"{label} failed: {err}")
+                rt.fail("limits", f"{label} failed, not giving {want!r}: {rt.describe(err)} {claim}")
         rt.count("limits checked", len(notes))
         print("  limits: " + "; ".join(notes))
 

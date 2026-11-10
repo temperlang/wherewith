@@ -9,6 +9,11 @@ mariadb, or duckdb) and its column types; `roundtrip.run_all` calls
 numbers, mixed case, a trailing space, and non-ASCII text, and is
 filled with a rendered common `INSERT`.
 
+Cases built unchecked run what the checks refuse, and probes run SQL
+written for the engines directly, for what the parser refuses, so each
+refusal's reason stays true. A case or probe can name the claim in
+docs/design.md it confirms, so a failure says which row to correct.
+
 Results are normalized before comparing (booleans to integers, decimals
 to floats, numbers compared by value), except in rows marked `Raw`,
 which compare the Python type the driver gives back, to pin the
@@ -37,6 +42,10 @@ PETS = [(1, "cat"), (1, "dog"), (2, "cat"), (9, "fish")]
 
 # What an engine gives instead of rows, when it refuses a query.
 ERROR = "error"
+# Any rows at all: the engine takes the query, whatever it gives.
+ACCEPTED = "accepted"
+# For a raw probe: not run on that engine.
+SKIP = "skip"
 
 
 class Refused(str):
@@ -64,16 +73,35 @@ class Raw:
 class Case:
     name: str
     pieces: tuple
-    rows: object  # a list of tuples, ERROR, or Raw
+    rows: object  # a list of tuples, ERROR, ACCEPTED, or Raw
     # Documented differences: engine name to what it gives instead.
     differs: dict = field(default_factory=dict)
     # Built with Query.unchecked, for what the checks refuse, to pin
     # why they refuse it.
     unchecked: bool = False
+    # The claim in docs/design.md the case confirms, named in failures.
+    claim: str = ""
 
 
-def C(name, *pieces, rows, unchecked=False, **differs):  # noqa: N802
-    return Case(name, pieces, rows, differs, unchecked)
+def C(name, *pieces, rows, unchecked=False, claim="", **differs):  # noqa: N802
+    return Case(name, pieces, rows, differs, unchecked, claim)
+
+
+@dataclass
+class Probe:
+    """SQL written for the engines directly, run as it is, for what
+    the common parser refuses, to pin why it refuses it. Written to
+    read the same on every engine (no quoted names, no `%`)."""
+
+    name: str
+    sql: str
+    rows: object  # a list of tuples, ERROR, ACCEPTED, or SKIP
+    claim: str
+    differs: dict = field(default_factory=dict)
+
+
+def P(name, sql, *, rows, claim, **differs):  # noqa: N802
+    return Probe(name, sql, rows, claim, differs)
 
 
 NOTHING = None
@@ -188,6 +216,110 @@ CASES = [
       sqlite=Raw(("float",)), duckdb=Raw(("float",))),
     C("SUM of integers", "SELECT sum(score) FROM people", rows=Raw(("Decimal",)),
       sqlite=Raw(("int",)), duckdb=Raw(("int",))),
+    C("NULLIF of values", "SELECT nullif(", H(1), ", ", H(2), ") AS n", rows=[(1,)],
+      claim="decided 8: values cast where their type is unknown (NULLIF)"),
+    C("collation and accents", "SELECT id FROM people WHERE name = 'emile'", rows=[], mariadb=[(4,)],
+      claim="rendering table, `'a' = 'A'`: MariaDB's default collation ignores accents too"),
+    C("collation and trailing spaces", "SELECT id FROM people WHERE name = 'carol'", rows=[], mariadb=[(3,)],
+      claim="rendering table, `'a' = 'A'`: MariaDB's default collation pads spaces"),
+    # Expression rules from the manuals, each refused (or allowed) by
+    # the checks, run as the engines read them. Most are built
+    # unchecked, since the checks refuse them.
+    C("integer division", "SELECT 7 / 2", rows=[(3.5,)], sqlite=[(3,)], postgres=[(3,)], unchecked=True,
+      claim="rendering table, `7 / 2`"),
+    C("text and integers in ||", "SELECT 'a' || 1, 1 || 'a', name || id FROM people WHERE id = 1",
+      rows=[("a1", "1a", "alice1")], claim="rendering table, `a || b`: integers beside text"),
+    C("% with a float", "SELECT 5.5 % 2", rows=[(1.5,)], sqlite=[(1.0,)], unchecked=True,
+      claim="expression checks: `%` with a float, which SQLite truncates"),
+    # PostgreSQL has no % for DOUBLE PRECISION at all.
+    C("% with a float column", "SELECT ratio % 1.0 FROM people WHERE id = 1", rows=[(0.5,)], sqlite=[(0.0,)],
+      postgres=ERROR, unchecked=True, claim="expression checks: `%` with a float, which SQLite truncates"),
+    # 7.5, -7.5, and 10.5: halves show how each rounds.
+    C("float to integer, halves", "SELECT CAST(ratio * 5.0 AS INTEGER), CAST(ratio * -5.0 AS INTEGER),"
+      " CAST(ratio * 7.0 AS INTEGER) FROM people WHERE id = 1", rows=[(8, -8, 10)], sqlite=[(7, -7, 10)],
+      unchecked=True,
+      claim="rendering table, `CAST(x AS INTEGER)`: SQLite truncates floats; the others round halves to even"),
+    C("decimal to integer, halves", "SELECT CAST(2.5 AS INTEGER), CAST(-2.5 AS INTEGER)", rows=[(3, -3)],
+      sqlite=[(2, -2)], unchecked=True,
+      claim="rendering table, `CAST(x AS INTEGER)`: SQLite truncates decimals; the others round halves away"
+            " from zero"),
+    C("floats as text", "SELECT CAST(ratio AS TEXT), ratio || '', CAST(ratio / 3.0 AS TEXT) FROM people"
+      " WHERE id = 4", rows=[("2", "2", "0.6666666666666666")], sqlite=[("2.0", "2.0", "0.666666666666667")],
+      duckdb=[("2.0", "2.0", "0.6666666666666666")], unchecked=True,
+      claim="expression checks: floats in `||` or cast to `TEXT` are written differently"),
+    C("a boolean in ||", "SELECT name || flag FROM people WHERE id = 1", rows=[("alicetrue",)],
+      sqlite=[("alice1",)], mariadb=[("alice1",)], unchecked=True,
+      claim="expression rule letters: a boolean in `||` is 1 in SQLite and MySQL, true in the others"),
+    # PostgreSQL casts a boolean only to INTEGER (32 bits) and text.
+    C("a boolean cast to INTEGER", "SELECT CAST(flag AS INTEGER) FROM people WHERE id = 1", rows=[(1,)],
+      postgres=ERROR, unchecked=True, claim="expression checks: casts of booleans"),
+    C("a boolean cast to DOUBLE", "SELECT CAST(flag AS DOUBLE) FROM people WHERE id = 1", rows=[(1.0,)],
+      postgres=ERROR, unchecked=True, claim="expression checks: casts of booleans"),
+    C("a boolean cast to TEXT", "SELECT CAST(flag AS TEXT) FROM people WHERE id = 1", rows=[("true",)],
+      sqlite=[("1",)], mariadb=[("1",)], unchecked=True, claim="expression checks: casts of booleans"),
+    C("an escape before an ordinary character", "SELECT 'ab' LIKE 'a!b' ESCAPE '!', 'a!b' LIKE 'a!b' ESCAPE '!'",
+      rows=[(1, 0)], unchecked=True,
+      claim="expression checks: an escape not before %, _, or itself (matches the character)"),
+    C("an escape at the end", "SELECT 'a!' LIKE 'a!' ESCAPE '!', 'a' LIKE 'a!' ESCAPE '!'", rows=ERROR,
+      sqlite=[(0, 0)], mariadb=[(1, 0)], unchecked=True,
+      claim="expression checks: an escape not before %, _, or itself (at the end)"),
+    C("integer % by zero", "SELECT score % (id - 4) FROM people WHERE id = 4", rows=[(None,)], postgres=ERROR,
+      duckdb=ERROR, claim="rendering table, `x / 0`: `%` by zero"),
+    C("float % by zero", "SELECT ratio % (id - 4) FROM people WHERE id = 4", rows=[(None,)], postgres=ERROR,
+      duckdb=[(math.nan,)], claim="rendering table, `x / 0`: `%` by zero"),
+    C("integer / by zero", "SELECT (score + 1) / (id - 4), (score - 1) / (id - 4) FROM people WHERE id = 4",
+      rows=[(None, None)], postgres=ERROR, duckdb=[(math.inf, -math.inf)], unchecked=True,
+      claim="rendering table, `x / 0`"),
+    C("text plus a number", "SELECT '1' + 1", rows=[(2,)], duckdb=ERROR, unchecked=True,
+      claim="expression checks: text in arithmetic"),
+    C("decimal text plus a number", "SELECT '1.5' + 1", rows=[(2.5,)], postgres=ERROR, duckdb=ERROR,
+      unchecked=True, claim="expression checks: text in arithmetic"),
+    C("a text column plus a number", "SELECT nick + 1 FROM people WHERE id = 1", rows=[(1,)], postgres=ERROR,
+      duckdb=ERROR, unchecked=True, claim="expression checks: text in arithmetic"),
+    C("a float plus text", "SELECT ratio + '1' FROM people WHERE id = 1", rows=[(2.5,)], unchecked=True,
+      claim="expression checks: text in arithmetic (beside a float, read alike)"),
+    # Statement rules from the manuals, the same way.
+    C("LIMIT in an IN subquery", "SELECT id FROM people WHERE id IN (SELECT owner FROM pets ORDER BY owner"
+      " LIMIT 1)", rows=[(1,)], mariadb=ERROR, unchecked=True,
+      claim="statement checks: `LIMIT` in an `IN` subquery, which MySQL refuses"),
+    C("* before other items", "SELECT *, owner FROM pets ORDER BY 1, 2 LIMIT 1", rows=[(1, "cat", 1)],
+      unchecked=True, claim="statement checks: `*` beside other items (first, MySQL takes it)"),
+    C("* after other items", "SELECT owner, * FROM pets ORDER BY 1, 3 LIMIT 1", rows=[(1, 1, "cat")],
+      mariadb=ERROR, unchecked=True, claim="statement checks: `*` beside other items, which MySQL refuses"),
+    C("GROUP BY a column that's also an alias", "SELECT owner % 2 AS owner, count(*) AS n FROM pets"
+      " GROUP BY owner ORDER BY 2, 1", rows=[(0, 1), (1, 1), (1, 2)], unchecked=True,
+      claim="which of alias and column: GROUP BY reads the column"),
+    C("HAVING a grouped column that's also an alias", "SELECT owner AS o, -owner AS owner FROM pets"
+      " GROUP BY owner HAVING owner > 1 ORDER BY 1", rows=[(2, -2), (9, -9)], unchecked=True,
+      claim="which of alias and column: HAVING reads a grouped column"),
+    C("HAVING an ungrouped column that's also an alias", "SELECT owner AS o, count(*) AS kind FROM pets"
+      " GROUP BY owner HAVING kind > 1 ORDER BY 1", rows=[(1, 2)], sqlite=[(1, 2), (2, 1), (9, 1)],
+      postgres=ERROR, unchecked=True,
+      claim="which of alias and column: HAVING reads an ungrouped column in SQLite, the alias in DuckDB and"
+            " MySQL"),
+    C("WHERE a column that's also an alias", "SELECT id, -score AS score FROM people WHERE score > 0 ORDER BY 1",
+      rows=[(1, -10), (5, -7)], unchecked=True, claim="which of alias and column: WHERE reads the column"),
+    C("ORDER BY an expression of a column that's also an alias", "SELECT id, -score AS score FROM people"
+      " WHERE score IS NOT NULL ORDER BY score + 0", rows=[(2, 3), (4, 0), (5, -7), (1, -10)],
+      mariadb=[(1, -10), (5, -7), (4, 0), (2, 3)], unchecked=True,
+      claim="which of alias and column: inside ORDER BY expressions, the column but in MySQL"),
+    C("ORDER BY a string", "SELECT id FROM people ORDER BY 'a', id", rows=[(1,), (2,), (3,), (4,), (5,)],
+      postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
+    C("ORDER BY a negative integer", "SELECT id FROM people ORDER BY -1, id", rows=ERROR,
+      mariadb=[(1,), (2,), (3,), (4,), (5,)], unchecked=True, claim="statement checks: constants in ORDER BY"),
+    C("ORDER BY a decimal", "SELECT id FROM people ORDER BY 1.5, id", rows=[(1,), (2,), (3,), (4,), (5,)],
+      postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
+    C("ORDER BY a place past the items", "SELECT id FROM people ORDER BY 2", rows=ERROR,
+      claim="statement checks: constants in ORDER BY (a place past the items fails everywhere)"),
+    C("GROUP BY a string", "SELECT count(*) FROM pets GROUP BY 'a'", rows=[(4,)], postgres=ERROR,
+      unchecked=True, claim="statement checks: constants in GROUP BY"),
+    # Which owner comes first is up to the engine where it's taken.
+    C("SELECT DISTINCT ordered by a column not selected", "SELECT DISTINCT owner FROM pets ORDER BY kind",
+      rows=ACCEPTED, postgres=ERROR, unchecked=True,
+      claim="statement checks: SELECT DISTINCT ordered by something not selected"),
+    C("ON reading a table joined after it", "SELECT count(*) FROM people AS p JOIN pets AS q"
+      " ON q.owner = r.owner JOIN pets AS r ON r.owner = p.id", rows=ERROR, sqlite=[(5,)], unchecked=True,
+      claim="statement checks: ON reading a table joined after it"),
     # What the output-name checks refuse, built unchecked.
     C("ORDER BY an alias beside a column of its name", "SELECT id, score AS id FROM people ORDER BY id",
       rows=[(3, None), (2, -3), (4, 0), (5, 7), (1, 10)], unchecked=True, postgres=ERROR, mariadb=ERROR),
@@ -204,6 +336,52 @@ WRITES = [
     ("UPDATE scratch SET v = ", H("z"), " WHERE id = 99"),
 ]
 WRITTEN = [(1, "a!"), (11, "alice")]
+
+# Statement rules for writes, run after WRITES are read back.
+LATER = [
+    C("UPDATE reading its own table", "UPDATE scratch SET v = 'u' WHERE id IN (SELECT id FROM scratch"
+      " WHERE id > 1)", rows=ACCEPTED, unchecked=True,
+      claim="statement checks: a subquery reading the table an UPDATE changes (MariaDB takes it from 10.3)"),
+    C("DELETE reading its own table", "DELETE FROM scratch WHERE id IN (SELECT id FROM scratch WHERE id > 100)",
+      rows=ACCEPTED, unchecked=True,
+      claim="statement checks: a subquery reading the table a DELETE changes (MariaDB takes it from 10.3)"),
+    C("INSERT VALUES reading its own table", "INSERT INTO scratch (id, v) VALUES ((SELECT count(*) FROM scratch),"
+      " 'x')", rows=ACCEPTED, mariadb=ERROR, unchecked=True,
+      claim="statement checks: a subquery reading the table an INSERT ... VALUES changes (MySQL error 1093)"),
+    C("INSERT naming a column twice", "INSERT INTO scratch (id, id) VALUES (1, 2)", rows=ERROR,
+      sqlite=ACCEPTED, unchecked=True, claim="statement checks: a column twice in INSERT"),
+    C("SET naming a column twice", "UPDATE scratch SET v = 'a', v = 'b' WHERE id = 1", rows=ERROR,
+      sqlite=ACCEPTED, mariadb=ACCEPTED, unchecked=True, claim="statement checks: a column twice in SET"),
+]
+
+# What the common parser refuses, as each engine reads it.
+PROBES = [
+    P("WHERE without FROM", "SELECT 1 AS x WHERE 1 = 1", rows=[(1,)],
+      claim="the parser: clauses after the items without FROM"),
+    P("WHERE without FROM, false", "SELECT 1 AS x WHERE 1 = 0", rows=[],
+      claim="the parser: clauses after the items without FROM"),
+    P("ORDER BY without FROM", "SELECT 1 AS x ORDER BY x", rows=[(1,)],
+      claim="the parser: clauses after the items without FROM"),
+    P("LIMIT without FROM", "SELECT 1 AS x LIMIT 1", rows=[(1,)],
+      claim="the parser: clauses after the items without FROM"),
+    P("TRIM with a second argument", "SELECT trim('xyxaxy', 'xy')", rows=[("a",)], mariadb=ERROR,
+      claim="the parser: TRIM takes one argument (a set of characters to remove, but MySQL has no such form)"),
+    P("TRIM ... FROM", "SELECT trim(BOTH 'xy' FROM 'xyxaxy')", rows=[("a",)], sqlite=ERROR,
+      mariadb=[("xa",)], claim="the parser: TRIM takes one argument (MySQL removes a whole string)"),
+    P("|| beside arithmetic", "SELECT 1 + 2 || 'a'", rows=[("3a",)], sqlite=[(3,)], mariadb=[(1,)],
+      claim="the parser: `||` beside arithmetic needs parentheses (SQLite binds `||` tighter)"),
+    # MySQL drops the backslash of an unknown escape, \x, in a string.
+    P("LIKE without ESCAPE, with a backslash", "SELECT 'a_b' LIKE 'a\\_b', 'a\\xb' LIKE 'a\\_b'", rows=[(0, 1)],
+      postgres=[(1, 0)], mariadb=[(1, 0)], mariadb_nbe=[(0, 1)],
+      claim="rendering table, `LIKE p`, no `ESCAPE`: `\\` escapes in PostgreSQL and MySQL, but not under"
+            " NO_BACKSLASH_ESCAPES"),
+    P("a subquery in FROM without an alias", "SELECT count(*) FROM (SELECT 1 AS x)", rows=[(1,)], mariadb=ERROR,
+      claim="rendering table, subquery in `FROM`: an alias is required in MySQL, and in PostgreSQL before 16"),
+    P("the default collation", "SELECT collation(name) FROM people WHERE id = 1", rows=SKIP,
+      mariadb=[("utf8mb4_uca1400_ai_ci",)], claim="rendering table, `'a' = 'A'`: MariaDB's default collation"),
+    P("the locale", "SELECT datcollate FROM pg_database WHERE datname = current_database()", rows=SKIP,
+      postgres=[("en_US.utf8",)], claim="rendering table, `UPPER`, `LOWER`: the image's locale"),
+]
 
 
 def unchecked_common(*pieces):
@@ -238,6 +416,8 @@ def same_value(a, b) -> bool:
     a, b = norm(a), norm(b)
     numbers = (int, float)
     if isinstance(a, numbers) and isinstance(b, numbers):
+        if isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b):
+            return True
         return a == b or math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
     return type(a) is type(b) and a == b
 
@@ -245,6 +425,8 @@ def same_value(a, b) -> bool:
 def matches(got, want) -> bool:
     if isinstance(want, Raw):
         return isinstance(got, list) and len(got) == 1 and tuple(type(v).__name__ for v in got[0]) == want.types
+    if want == ACCEPTED:
+        return got != ERROR
     if want == ERROR or got == ERROR:
         return got == want
     return len(got) == len(want) and all(
@@ -299,33 +481,68 @@ def teardown(e) -> None:
             pass
 
 
-def check(e, seed: int, n: int) -> None:
-    """Runs the corpus, the writes, and n random queries on one engine
-    setting."""
+def claimed(case) -> str:
+    return f" [docs/design.md: {case.claim}]" if case.claim else ""
+
+
+def setting(e) -> str:
+    """The engine's name, and for MariaDB under NO_BACKSLASH_ESCAPES,
+    `mariadb_nbe`, where a case can differ again."""
+    return e.corpus_name + ("_nbe" if getattr(e, "nbe", False) else "")
+
+
+def expected(e, differs: dict, rows):
+    return differs.get(setting(e), differs.get(e.corpus_name, rows))
+
+
+def check_case(e, case: Case) -> None:
     name = e.corpus_name
+    rt.count("corpus queries")
+    want = expected(e, case.differs, case.rows)
+    try:
+        q = unchecked_common(*case.pieces) if case.unchecked else common(*case.pieces)
+    except Exception as err:  # noqa: BLE001
+        rt.fail("corpus", f"{case.name}: the common query doesn't build ({rt.describe(err)}){claimed(case)}")
+        return
+    for i in range(len(e.styles())):
+        if not usable(e, q, i):
+            rt.count("corpus styles refused by design")
+            continue
+        got = run(e, q, i)
+        if not matches(got, want):
+            sql = q.render(e.dialect, e.styles()[i].style).sql
+            rt.fail("corpus", f"{case.name} ({e.styles()[i].name}): {sql!r} gave {got!r}, not {want!r}"
+                    f"{claimed(case)}")
+    if name in case.differs:
+        if matches(run(e, q), case.rows):
+            rt.fail("corpus", f"{case.name}: documented as different on {name}, but isn't{claimed(case)}")
+        else:
+            rt.count("corpus differences confirmed")
+
+
+def check_probe(e, probe: Probe) -> None:
+    """Runs SQL as written, without Wherewith."""
+    want = expected(e, probe.differs, probe.rows)
+    if want == SKIP:
+        return
+    rt.count("corpus probes")
+    try:
+        got = [tuple(row) for row in e.execute(probe.sql)]
+    except Exception as err:  # noqa: BLE001
+        got = Refused(err)
+    if not matches(got, want):
+        rt.fail("corpus probe", f"{probe.name}: {probe.sql!r} gave {got!r}, not {want!r}"
+                f" [docs/design.md: {probe.claim}]")
+
+
+def check(e, seed: int, n: int) -> None:
+    """Runs the corpus, the writes, the probes, and n random queries on
+    one engine setting."""
     teardown(e)
     setup(e)
     try:
         for case in CASES:
-            rt.count("corpus queries")
-            want = case.differs.get(name, case.rows)
-            try:
-                q = unchecked_common(*case.pieces) if case.unchecked else common(*case.pieces)
-            except Exception as err:  # noqa: BLE001
-                rt.fail("corpus", f"{case.name}: the common query doesn't build ({rt.describe(err)})")
-                continue
-            for i in range(len(e.styles())):
-                if not usable(e, q, i):
-                    rt.count("corpus styles refused by design")
-                    continue
-                got = run(e, q, i)
-                if not matches(got, want):
-                    sql = q.render(e.dialect, e.styles()[i].style).sql
-                    rt.fail("corpus", f"{case.name} ({e.styles()[i].name}): {sql!r} gave {got!r}, not {want!r}")
-            if name in case.differs and matches(run(e, q), case.rows):
-                rt.fail("corpus", f"{case.name}: documented as different on {name}, but isn't")
-            if name in case.differs:
-                rt.count("corpus differences confirmed")
+            check_case(e, case)
         for pieces in WRITES:
             rt.count("corpus writes")
             q = common(*pieces)
@@ -335,6 +552,10 @@ def check(e, seed: int, n: int) -> None:
         got = run(e, common("SELECT id, v FROM scratch ORDER BY id"))
         if not matches(got, WRITTEN):
             rt.fail("corpus", f"after the writes, scratch has {got!r}, not {WRITTEN!r}")
+        for case in LATER:
+            check_case(e, case)
+        for probe in PROBES:
+            check_probe(e, probe)
         check_random(e, seed, n)
     finally:
         teardown(e)
