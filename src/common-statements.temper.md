@@ -655,7 +655,8 @@ For every target:
 - **`LIMIT` and `OFFSET`** take a non-negative integer; SQLite reads a
   negative one as none, and the others refuse it.
 - **Constants in `GROUP BY` and `ORDER BY`**, other than an integer
-  for a column's place, which PostgreSQL refuses and the others ignore.
+  for a column's place, which PostgreSQL and DuckDB refuse and SQLite
+  and MySQL ignore; a negative integer fails everywhere.
 - **Grouping:** in a query with `GROUP BY` or an aggregate, a column
   outside an aggregate must be one it groups by, since SQLite (and
   MySQL without `ONLY_FULL_GROUP_BY`) takes any row's value, and the
@@ -663,9 +664,10 @@ For every target:
 - **Aliases:** a `SELECT` alias that names something other than the
   column of its own name, used in `WHERE`, `ON`, `GROUP BY`, `HAVING`,
   or inside an `ORDER BY` expression, since some databases read it as
-  the alias and others as a column; alone in `ORDER BY`, every
-  database reads it as the alias, if its case matches, but for the
-  [output names](#output-names) below.
+  the alias (DuckDB and MariaDB in `HAVING`, and MySQL inside `ORDER
+  BY`) and others as a column, and readers could take it either way;
+  alone in `ORDER BY`, every database reads it as the alias, if its
+  case matches, but for the [output names](#output-names) below.
 - **`SELECT DISTINCT … ORDER BY`** something not selected, which SQLite
   takes and the others refuse.
 - **Names twice:** a table or alias twice in `FROM`, a column twice in
@@ -681,7 +683,8 @@ For MySQL and MariaDB (either profile):
   `SET`, since MySQL assigns left to right, where the others read the
   old values.
 - **A subquery that reads the table** an `INSERT … VALUES`, `UPDATE`,
-  or `DELETE` changes, which MySQL refuses.
+  or `DELETE` changes, which MySQL refuses (error 1093), though
+  MariaDB takes all three.
 - **`LIMIT` in an `IN` subquery**, and **`*` beside other items**,
   which MySQL refuses.
 - **`ORDER BY` an alias** that a plain column has, `SELECT a, b AS a

@@ -300,13 +300,12 @@ CASES = [
     C("WHERE a column that's also an alias", "SELECT id, -score AS score FROM people WHERE score > 0 ORDER BY 1",
       rows=[(1, -10), (5, -7)], unchecked=True, claim="which of alias and column: WHERE reads the column"),
     C("ORDER BY an expression of a column that's also an alias", "SELECT id, -score AS score FROM people"
-      " WHERE score IS NOT NULL ORDER BY score + 0", rows=[(2, 3), (4, 0), (5, -7), (1, -10)],
-      mariadb=[(1, -10), (5, -7), (4, 0), (2, 3)], unchecked=True,
-      claim="which of alias and column: inside ORDER BY expressions, the column but in MySQL"),
+      " WHERE score IS NOT NULL ORDER BY score + 0", rows=[(2, 3), (4, 0), (5, -7), (1, -10)], unchecked=True,
+      claim="which of alias and column: inside ORDER BY expressions, the column (MariaDB too), but in MySQL"),
     C("ORDER BY a string", "SELECT id FROM people ORDER BY 'a', id", rows=[(1,), (2,), (3,), (4,), (5,)],
       postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
-    C("ORDER BY a negative integer", "SELECT id FROM people ORDER BY -1, id", rows=ERROR,
-      mariadb=[(1,), (2,), (3,), (4,), (5,)], unchecked=True, claim="statement checks: constants in ORDER BY"),
+    C("ORDER BY a negative integer", "SELECT id FROM people ORDER BY -1, id", rows=ERROR, unchecked=True,
+      claim="statement checks: constants in ORDER BY (a negative integer fails everywhere, MariaDB too)"),
     C("ORDER BY a decimal", "SELECT id FROM people ORDER BY 1.5, id", rows=[(1,), (2,), (3,), (4,), (5,)],
       postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
     C("ORDER BY a place past the items", "SELECT id FROM people ORDER BY 2", rows=ERROR,
@@ -346,8 +345,9 @@ LATER = [
       rows=ACCEPTED, unchecked=True,
       claim="statement checks: a subquery reading the table a DELETE changes (MariaDB takes it from 10.3)"),
     C("INSERT VALUES reading its own table", "INSERT INTO scratch (id, v) VALUES ((SELECT count(*) FROM scratch),"
-      " 'x')", rows=ACCEPTED, mariadb=ERROR, unchecked=True,
-      claim="statement checks: a subquery reading the table an INSERT ... VALUES changes (MySQL error 1093)"),
+      " 'x')", rows=ACCEPTED, unchecked=True,
+      claim="statement checks: a subquery reading the table an INSERT ... VALUES changes (MariaDB takes it;"
+            " MySQL error 1093)"),
     C("INSERT naming a column twice", "INSERT INTO scratch (id, id) VALUES (1, 2)", rows=ERROR,
       sqlite=ACCEPTED, unchecked=True, claim="statement checks: a column twice in INSERT"),
     C("SET naming a column twice", "UPDATE scratch SET v = 'a', v = 'b' WHERE id = 1", rows=ERROR,
@@ -370,11 +370,19 @@ PROBES = [
       mariadb=[("xa",)], claim="the parser: TRIM takes one argument (MySQL removes a whole string)"),
     P("|| beside arithmetic", "SELECT 1 + 2 || 'a'", rows=[("3a",)], sqlite=[(3,)], mariadb=[(1,)],
       claim="the parser: `||` beside arithmetic needs parentheses (SQLite binds `||` tighter)"),
-    # MySQL drops the backslash of an unknown escape, \x, in a string.
+    # MySQL drops the backslash of an unknown escape, \x, in a string,
+    # but keeps it before _ and %. Under NO_BACKSLASH_ESCAPES, MariaDB
+    # still reads `\` as LIKE's escape (MySQL's manual says MySQL
+    # doesn't), so `\` there is refused for that profile even alone.
     P("LIKE without ESCAPE, with a backslash", "SELECT 'a_b' LIKE 'a\\_b', 'a\\xb' LIKE 'a\\_b'", rows=[(0, 1)],
-      postgres=[(1, 0)], mariadb=[(1, 0)], mariadb_nbe=[(0, 1)],
-      claim="rendering table, `LIKE p`, no `ESCAPE`: `\\` escapes in PostgreSQL and MySQL, but not under"
-            " NO_BACKSLASH_ESCAPES"),
+      postgres=[(1, 0)], mariadb=[(1, 0)],
+      claim="rendering table, `LIKE p`, no `ESCAPE`: `\\` escapes in PostgreSQL and MariaDB, under"
+            " NO_BACKSLASH_ESCAPES too, and in MySQL but not under it"),
+    # What the refusal asks for instead: an ESCAPE reads alike in every
+    # mode, and a backslash in the pattern is then itself.
+    P("LIKE with ESCAPE, with a backslash", "SELECT 'a\\b' LIKE 'a\\%' ESCAPE '!', 'a_b' LIKE 'a!_b' ESCAPE '!'",
+      rows=[(1, 1)], mariadb=SKIP, mariadb_nbe=[(1, 1)],
+      claim="rendering table, `LIKE p`, no `ESCAPE`: with `ESCAPE`, `\\` is itself under NO_BACKSLASH_ESCAPES"),
     P("a subquery in FROM without an alias", "SELECT count(*) FROM (SELECT 1 AS x)", rows=[(1,)], mariadb=ERROR,
       claim="rendering table, subquery in `FROM`: an alias is required in MySQL, and in PostgreSQL before 16"),
     P("the default collation", "SELECT collation(name) FROM people WHERE id = 1", rows=SKIP,

@@ -404,8 +404,9 @@ target.
       let relaxed = [
         new Pair("SELECT a / 2 FROM t", [Dialect.sqlite, Dialect.postgres]),
         new Pair("SELECT 'a' || TRUE", [Dialect.sqlite, Dialect.mysql]),
-        new Pair("SELECT a FROM t WHERE a LIKE b", [Dialect.sqlite, Dialect.duckdb, Dialect.mysqlNoBackslashEscapes]),
-        new Pair("SELECT a FROM t WHERE a LIKE 'a\\%'", [Dialect.sqlite, Dialect.duckdb, Dialect.mysqlNoBackslashEscapes]),
+        new Pair("SELECT a FROM t WHERE a LIKE b", [Dialect.sqlite, Dialect.duckdb]),
+        new Pair("SELECT a FROM t WHERE a LIKE 'a\\%'", [Dialect.sqlite, Dialect.duckdb]),
+        new Pair("SELECT a FROM t WHERE a LIKE b", [Dialect.postgres, Dialect.mysql]),
         new Pair("SELECT substr(a, 0) FROM t", [Dialect.sqlite, Dialect.duckdb]),
         new Pair("SELECT 'a' + 1", [Dialect.postgres]),
         new Pair("SELECT CAST(1.5 AS INTEGER)", [Dialect.mysql, Dialect.mysqlNoBackslashEscapes]),
@@ -420,6 +421,11 @@ target.
         new Pair("SELECT a FROM t WHERE a LIKE b", [Dialect.sqlite, Dialect.postgres]),
         new Pair("SELECT a FROM t WHERE a LIKE 'a\\%'", [Dialect.sqlite, Dialect.postgres]),
         new Pair("SELECT a FROM t WHERE a LIKE b", [Dialect.mysql, Dialect.mysqlNoBackslashEscapes]),
+        // MariaDB reads `\` as LIKE's escape under NO_BACKSLASH_ESCAPES,
+        // and MySQL doesn't, so that profile alone still differs.
+        new Pair("SELECT a FROM t WHERE a LIKE b", [Dialect.mysqlNoBackslashEscapes]),
+        new Pair("SELECT a FROM t WHERE a LIKE 'a\\%'", [Dialect.mysqlNoBackslashEscapes]),
+        new Pair("SELECT a FROM t WHERE a LIKE 'a\\%'", [Dialect.sqlite, Dialect.duckdb, Dialect.mysqlNoBackslashEscapes]),
         new Pair("SELECT a FROM t WHERE a = NULL", [Dialect.postgres]),
         new Pair("SELECT a FROM t WHERE a LIKE 'a!' ESCAPE '!'", [Dialect.sqlite]),
         new Pair("SELECT sum(max(a)) FROM t", [Dialect.duckdb]),
@@ -431,6 +437,10 @@ target.
         placed("SELECT a FROM t WHERE a LIKE 'a\\%'", "backslash in a string for mysql; bind the value instead", 30));
       assert(narrowed([Dialect.sqlite, Dialect.postgres], "SELECT a FROM t WHERE a LIKE 'a\\%'") ==
         placed("SELECT a FROM t WHERE a LIKE 'a\\%'", "\\ in a LIKE pattern without ESCAPE; databases differ", 30));
+      assert(narrowed([Dialect.mysqlNoBackslashEscapes], "SELECT a FROM t WHERE a LIKE 'a\\%'") ==
+        placed("SELECT a FROM t WHERE a LIKE 'a\\%'", "\\ in a LIKE pattern without ESCAPE; databases differ", 30));
+      // With ESCAPE, the pattern reads alike everywhere.
+      assert(ruled([Dialect.mysqlNoBackslashEscapes], "SELECT a FROM t WHERE a LIKE b ESCAPE '!'") != null);
     }
 
 ## The lexer oracle

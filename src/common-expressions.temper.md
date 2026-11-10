@@ -919,10 +919,12 @@ unknown for columns and nested queries. The checker refuses:
   A value hole holding null counts the same as `NULL` written in the
   text, since every value is known when the query is built:
   `a = ${null}` is refused, while `COALESCE(${null}, a)` is fine.
-- **`LIKE`:** without `ESCAPE`, only a literal pattern, since
-  PostgreSQL and MySQL read `\` in it as an escape and SQLite and
-  DuckDB don't; with it, one character other than `'`, `%`, or `_`,
-  and in a literal pattern, only before `%`, `_`, or itself.
+- **`LIKE`:** without `ESCAPE`, only a literal pattern without `\`,
+  since PostgreSQL, MySQL, and MariaDB read `\` in it as an escape,
+  SQLite and DuckDB don't, and under `NO_BACKSLASH_ESCAPES` MariaDB
+  still does (checked) but MySQL doesn't (by its manual); with it, one
+  character other than `'`, `%`, or `_`, and in a literal pattern,
+  only before `%`, `_`, or itself.
 - **`SUBSTR`** with a literal start below 1 or a negative length, and a
   float for either.
 - **An aggregate inside an aggregate.**
@@ -934,20 +936,22 @@ misused, and aggregates in aggregates) apply to every target. Each
 rule gives a letter per profile, in the order `sqlite`, `postgres`,
 `mysql`, `mysqlNoBackslashEscapes`, and `duckdb`; profiles with the
 same letter read it alike, and the check applies only to targets with
-different letters. Kinds that databases convert differently differ
+different letters. A `?` means the profile's own databases read it
+differently, so the check applies wherever that profile is a target,
+even alone. Kinds that databases convert differently differ
 everywhere, but for the two MySQL profiles; the rest:
 
 | Rule | Letters | Why |
 | --- | --- | --- |
 | `/` without a float | `aabbc` | SQLite and PostgreSQL divide integers to an integer |
 | A boolean in `\|\|` | `abaab` | `1` in SQLite and MySQL, `true` in the others |
-| `LIKE` without `ESCAPE`, on a value or a `\` | `abbaa` | `\` escapes in PostgreSQL and MySQL, but not under `NO_BACKSLASH_ESCAPES` |
+| `LIKE` without `ESCAPE`, on a value or a `\` | `abb?a` | `\` escapes in PostgreSQL, MySQL, and MariaDB, but not in SQLite and DuckDB; under `NO_BACKSLASH_ESCAPES`, MariaDB's still does and MySQL's doesn't |
 | `SUBSTR` start below 1 or length below 0 | `abcca` | SQLite and DuckDB agree |
 
     let ruleKinds = "abccd";
     let ruleDivision = "aabbc";
     let ruleBooleanText = "abaab";
-    let ruleLikeEscape = "abbaa";
+    let ruleLikeEscape = "abb?a";
     let ruleSubstr = "abcca";
 
 The kinds:
@@ -1345,13 +1349,15 @@ and `COALESCE` give, refusing kinds that differ.
       }
 
 `varies` says whether the targets read something differently, by its
-rule's letters.
+rule's letters, or a target's own databases do, by its `?`.
 
       public varies(rule: String): Boolean {
         var seen = -1;
         for (let d of targets) {
           let letter = ruleLetter(rule, d);
-          if (seen < 0) {
+          if (letter == char'?') {
+            return true;
+          } else if (seen < 0) {
             seen = letter;
           } else if (letter != seen) {
             return true;
