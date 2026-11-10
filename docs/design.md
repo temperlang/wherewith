@@ -151,7 +151,9 @@ Done:
   for template holes.
 - `Query`: a query for one dialect, as a list of parts: `QueryText`
   (SQL text), `QueryParam` (a `SqlValue`: `SqlText`, `SqlInt`,
-  `SqlFloat`, `SqlBool`, or `SqlNull`), and `QueryName` (an
+  `SqlFloat`, `SqlBool`, or `SqlNull`, whose `toString` writes it as
+  SQL would, the same in every language: `'it''s'`, `7`, `2.0`,
+  `TRUE`, `NULL`), and `QueryName` (an
   `Identifier`). A nested query's parts go in place, so parameters
   number straight through. `dialect` is the dialect whose lexing rules
   checked its text, and `params` lists the values in order. Its
@@ -190,6 +192,11 @@ Done:
   `Query` (of the same dialect, as for rendering, or a common query,
   rendered for the builder's database), and `build`, which
   bubbles on a mistake, with `templateProblem` saying why.
+  `templateProblem` gives the problem `build` would bubble for
+  without building: lexing, the template's end, and, for the common
+  dialect, the parser and the checks. Reading it changes nothing, so a
+  half-written template can be finished; a common template's parse and
+  checks run once per state of the template, shared with `build`.
 - The `sqlite`, `postgres`, `mysql`, and `duckdb` tags (`SqliteTag`,
   `PostgresTag`, `MysqlTag`, and `DuckdbTag`): `postgres"SELECT * FROM
   t WHERE a = ${x}"` gives a `Query`, built with that dialect's checks.
@@ -324,7 +331,8 @@ common query renders for every profile:
   for them; rendering for another database bubbles.
 - **Builder.** `new QueryBuilder(Dialect.common)` takes the same
   `appendSafe` and `append` calls, and `build` parses and checks,
-  bubbling with `templateProblem`; the tag panics, as other tags do.
+  bubbling with `templateProblem`, which gives the same problem before
+  `build` runs; the tag panics, as other tags do.
 - **Holes by kind.** A value (`String`, `Int`, `SqlValue`, …) goes
   only where the grammar takes an expression or a `LIMIT` count; an
   `Identifier` only where it takes a name (a table, a column, an
@@ -471,15 +479,17 @@ gives the first problem with its position:
 - **Constructs:** each one the target's renderer supports, in the
   forms it supports: `LIMIT` inside an `IN` subquery is refused for
   MySQL, which rejects it, say.
-- **Known traps,** where the text shows them: `x = NULL` (always
-  unknown; use `IS NULL`), `/` without a known float operand, `LIKE`
-  without `ESCAPE` on a pattern that isn't a plain literal, `CASE`
-  branches mixing literal kinds (PostgreSQL and DuckDB refuse them,
-  SQLite and MySQL convert), a `SUBSTR` start below 1, and an `UPDATE`
-  that reads a column it set earlier in the same `SET`, since MySQL
-  assigns left to right.
+- **Known traps,** where the text or values show them: `x = NULL`,
+  or `x = ${v}` with a null `v` (always unknown; use `IS NULL`), `/`
+  without a known float operand, `LIKE` without `ESCAPE` on a pattern
+  that isn't a plain literal, `CASE` branches mixing literal kinds
+  (PostgreSQL and DuckDB refuse them, SQLite and MySQL convert), a
+  `SUBSTR` start below 1, and an `UPDATE` that reads a column it set
+  earlier in the same `SET`, since MySQL assigns left to right.
 
-Built so far, for expressions: `= NULL` and `NULL` in `IN` lists,
+Built so far, for expressions: `= NULL` and `NULL` in `IN` lists, and
+null values in their place (every value is known when the query is
+built, so a null one is the same trap as `NULL` in the text),
 `/` without a float operand (a float value, a decimal, `AVG`, a
 `CAST` to `DOUBLE`, or arithmetic on one), `%` with a float (SQLite
 truncates it), `/` or `%` by a literal zero, `LIKE` without `ESCAPE`

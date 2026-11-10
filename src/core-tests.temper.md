@@ -138,6 +138,37 @@ plain in every dialect's names.
       assert(Dialect.mysql.nameProblem(u(0x0)) == "NUL in name");
     }
 
+## Values
+
+`toString` shows each kind of value as SQL writes it, the same in every
+language: text quoted, with `'` doubled; integers; floats as Temper
+writes them; and `TRUE`, `FALSE`, and `NULL`.
+
+    test("values as text") {
+      let none: SqlValue = new SqlNull();
+      assert(none.toString() == "NULL");
+      assert(new SqlText("Launch").toString() == "'Launch'");
+      assert(new SqlText("").toString() == "''");
+      assert(new SqlText("it's").toString() == "'it''s'");
+      assert(new SqlText("Robert'); DROP TABLE students; --").toString() == "'Robert''); DROP TABLE students; --'");
+      assert(new SqlText("a\\b \"c\" ${u(0x1F600)}").toString() == "'a\\b \"c\" ${u(0x1F600)}'");
+      assert(new SqlInt(7.toInt64()).toString() == "7");
+      assert(new SqlInt(-7.toInt64()).toString() == "-7");
+      assert(new SqlInt(0x7FFFFFFFFFFFFFFF_i64).toString() == "9223372036854775807");
+      assert(new SqlFloat(2.0).toString() == "2.0");
+      assert(new SqlFloat(0.5).toString() == "0.5");
+      assert(new SqlFloat(-1.5).toString() == "-1.5");
+      assert(new SqlFloat(1.0e25).toString() == "1.0e+25");
+      assert(new SqlFloat(NaN).toString() == "NaN");
+      assert(new SqlFloat(Infinity).toString() == "Infinity");
+      assert(new SqlFloat(-Infinity).toString() == "-Infinity");
+      assert(new SqlBool(true).toString() == "TRUE");
+      assert(new SqlBool(false).toString() == "FALSE");
+      let values: List<SqlValue> = [new SqlInt(7.toInt64()), new SqlText("x"), new SqlBool(true), new SqlNull()];
+      assert(values.join(", ", fn (v: SqlValue): String { v.toString() }) == "7, 'x', TRUE, NULL");
+      assert("${values[1]}" == "'x'");
+    }
+
 PostgreSQL counts UTF-8 bytes, up to 63; MySQL counts characters, up to
 64; SQLite has no limit.
 

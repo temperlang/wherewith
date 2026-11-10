@@ -366,6 +366,91 @@ params as they were, and consistent.
       assert(r.params.length == 1);
     }
 
+## Problems before building
+
+`templateProblem` says what `build` would refuse, before `build` runs:
+lexing, the template's end, and, for the common dialect, the parser and
+the checks. Reading it changes nothing, so a template that's only half
+written can still be finished, and narrower targets can still relax a
+check.
+
+    test("templateProblem before build") {
+      let divided = new QueryBuilder(Dialect.common);
+      divided.appendSafe("SELECT a / 2 FROM t");
+      let half = "/ without a float operand; databases divide integers differently, at line 1, column 10: SELECT a / 2 FROM t";
+      assert(divided.templateProblem == half);
+      assert(divided.templateProblem == half);
+      assert(!(do { divided.build(); true } orelse false));
+      assert(divided.templateProblem == half);
+
+      // Half written: a problem now, gone once it's finished.
+      let b = new QueryBuilder(Dialect.common);
+      b.appendSafe("SELECT name FROM users WHERE id IN (");
+      assert(b.templateProblem != null);
+      b.appendInt(7);
+      b.appendSafe(", ");
+      b.appendInt(9);
+      assert(b.templateProblem != null);
+      b.appendSafe(")");
+      assert(b.templateProblem == null);
+      let q = b.build() orelse panic();
+      assert(qmarks(q) == "SELECT \"name\" FROM \"users\" WHERE \"id\" IN (?, ?)");
+      assert(b.templateProblem == null);
+
+      // A null value at = is a check, so it shows before build too.
+      let nulled = new QueryBuilder(Dialect.common);
+      nulled.appendSafe("SELECT a FROM t WHERE b = ");
+      nulled.appendString(null);
+      assert(nulled.templateProblem ==
+        "= with a null value is never true; use IS NULL, at line 1, column 25: CT a FROM t WHERE b = ${holeMark}");
+
+      // A nested query is checked as part of the whole.
+      let inner = new QueryBuilder(Dialect.common);
+      inner.appendSafe("SELECT user_id FROM orders LIMIT 5");
+      let outer = new QueryBuilder(Dialect.common);
+      outer.appendSafe("SELECT name FROM users WHERE id IN (");
+      outer.appendQuery(inner.build() orelse panic());
+      outer.appendSafe(")");
+      assert(outer.templateProblem ==
+        "LIMIT in an IN subquery; MySQL refuses it, at line 1, column 37:  users WHERE id IN (${holeMark})");
+
+      // Targets set after reading it still count.
+      let path = new QueryBuilder(Dialect.common);
+      path.appendSafe("SELECT 'C:\\temp' AS p");
+      assert(path.templateProblem != null);
+      path.targets = [Dialect.postgres, Dialect.sqlite];
+      assert(path.templateProblem == null);
+      assert(render(path.build() orelse panic(), Dialect.postgres, PlaceholderStyle.question) == "SELECT 'C:\\temp' AS \"p\"");
+
+      // A template that ends in a quote, for a database or common.
+      let open = new QueryBuilder(Dialect.postgres);
+      open.appendSafe("SELECT 'a");
+      assert(open.templateProblem == "template ends inside a quote or comment");
+      open.appendSafe("'");
+      assert(open.templateProblem == null);
+      let commonOpen = new QueryBuilder(Dialect.common);
+      commonOpen.appendSafe("SELECT 'a");
+      assert(commonOpen.templateProblem == "string not closed, at line 1, column 8: SELECT 'a");
+
+      // Ending in a line comment is fine: build ends it, and text added
+      // after reading is still in the comment.
+      for (let d of [Dialect.common, Dialect.sqlite]) {
+        let noted = new QueryBuilder(d);
+        noted.appendSafe("SELECT 1 AS x -- one");
+        assert(noted.templateProblem == null);
+        noted.appendSafe(" ? two");
+        assert(noted.templateProblem == null);
+        assert(contains(qmarks(noted.build() orelse panic()), "SELECT 1 AS "));
+      }
+
+      // Lexing problems stay, as before.
+      let quoted = new QueryBuilder(Dialect.common);
+      quoted.appendSafe("SELECT a FROM t WHERE b = '");
+      quoted.appendInt(1);
+      quoted.appendSafe("'");
+      assert(quoted.templateProblem == "hole inside a quote or comment, at line 1, column 28: a FROM t WHERE b = '");
+    }
+
 ## The site's example
 
 The site's opening example: one common query, checked for every

@@ -265,13 +265,33 @@ quoted, as SQL text.
 A *SqlValue* is a parameter's value, typed so each driver can bind it
 with its own type.
 
-    export sealed interface SqlValue {}
+`toString` shows a value as SQL writes it, the same in every language,
+for logs and for showing a query's `params`: text in single quotes,
+with each `'` doubled (`'it''s'`); integers in decimal (`-7`); floats
+as Temper writes them, always with a `.` or an exponent, so they don't
+read as integers (`2.0`, `0.5`, `1.0e+25`, `NaN`, `Infinity`); and
+`TRUE`, `FALSE`, and `NULL`. It's for reading only: a value goes to
+the driver as a parameter, never into SQL text.
 
-    export class SqlText(public value: String) extends SqlValue {}
-    export class SqlInt(public value: Int64) extends SqlValue {}
-    export class SqlFloat(public value: Float64) extends SqlValue {}
-    export class SqlBool(public value: Boolean) extends SqlValue {}
-    export class SqlNull() extends SqlValue {}
+    export sealed interface SqlValue {
+      public toString(): String;
+    }
+
+    export class SqlText(public value: String) extends SqlValue {
+      public toString(): String { "'${replaceCodePoint(value, char'\'', "''")}'" }
+    }
+    export class SqlInt(public value: Int64) extends SqlValue {
+      public toString(): String { value.toString() }
+    }
+    export class SqlFloat(public value: Float64) extends SqlValue {
+      public toString(): String { value.toString() }
+    }
+    export class SqlBool(public value: Boolean) extends SqlValue {
+      public toString(): String { if (value) { "TRUE" } else { "FALSE" } }
+    }
+    export class SqlNull() extends SqlValue {
+      public toString(): String { "NULL" }
+    }
 
 ## Helpers
 

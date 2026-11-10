@@ -441,6 +441,29 @@ kind.
       assert(expr"a = ${t}" == "a = {t}");
     }
 
+A value hole holding null is refused wherever `NULL` written in the
+text is: in a comparison, in an `IN` list, and after `WHEN` in a simple
+`CASE`, which never match. Elsewhere it's fine.
+
+    test("common expression null values") {
+      let n: SqlValue = new SqlNull();
+      let h = holeMark;
+      assert(expr"a = ${n}" == at("= with a null value is never true; use IS NULL", 1, 3, "a = ${h}"));
+      assert(expr"${n} <> a" == at("<> with a null value is never true; use IS NOT NULL", 1, 6, "${h} <> a"));
+      assert(expr"a != ${n}" == at("!= with a null value is never true; use IS NOT NULL", 1, 3, "a != ${h}"));
+      assert(expr"a < ${n}" == at("< with a null value is never true", 1, 3, "a < ${h}"));
+      assert(expr"a IN (1, ${n})" == at("a null value in an IN list never matches; use IS NULL", 1, 10, "a IN (1, ${h})"));
+      assert(expr"a NOT IN (${n})" == at("a null value in an IN list never matches; use IS NULL", 1, 11, "a NOT IN (${h})"));
+      assert(expr"CASE a WHEN ${n} THEN 1 END" ==
+        at("WHEN with a null value never matches; use WHEN x IS NULL", 1, 13, "CASE a WHEN ${h} THEN 1 END"));
+      assert(expr"COALESCE(${n}, a) = 1" == "COALESCE(?, a) = 1");
+      assert(expr"a IS NULL OR a = ${1}" == "a IS NULL OR a = ?");
+      assert(expr"CASE WHEN a THEN ${n} ELSE 1 END" == "CASE WHEN a THEN ? ELSE 1 END");
+      assert(expr"${n} IS NULL" == "? IS NULL");
+      let nick: String? = null;
+      assert(expr"a = ${nick}" == at("= with a null value is never true; use IS NULL", 1, 3, "a = ${h}"));
+    }
+
 ## Depth
 
 Nesting stops at 64 levels, counting parentheses, prefixes, and

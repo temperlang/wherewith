@@ -382,6 +382,11 @@ let q = b.build() orelse panic();
       private var pending: StringBuilder;
       private var hasPending: Boolean;
       private var problem: String?;
+      // For the common dialect, whether `wholeProblem` holds the whole
+      // template's check, done since the template or targets last
+      // changed.
+      private var checked: Boolean;
+      private var wholeProblem: String?;
 
       public constructor(dialect: Dialect) {
         let lexer = newLexer(dialect);
@@ -394,6 +399,8 @@ let q = b.build() orelse panic();
         this.pending = new StringBuilder();
         this.hasPending = false;
         this.problem = null;
+        this.checked = false;
+        this.wholeProblem = null;
       }
 
 `targets` are the databases a common query must mean the same on. Set
@@ -416,6 +423,7 @@ which MySQL's default profile reads as an escape, is fine for
             }
           }
           targetList = value;
+          checked = false;
         }
       }
 
@@ -486,6 +494,7 @@ start and end.
           return;
         }
         if (x.dialect.name != "common") { return; }
+        checked = false;
         common.beginQuery();
         for (let p of x.parts) {
           when (p) {
@@ -511,6 +520,7 @@ start and end.
       }
 
       private added(part: QueryPart): Void {
+        checked = false;
         parts.add(part);
         if (common != null) { holes.add(part); }
       }
@@ -521,26 +531,39 @@ start and end.
           appendSafe("\n");
           flush();
         }
-        let ended = lexer.endProblem();
-        if (ended != null) { fail(ended); }
-        let common = this.common;
-        if (common != null) {
-          if (problem == null) {
-            let found = commonProblem(common, holes.toList(), targetList);
-            if (found != null) { fail(found); }
-          }
-        }
-        if (problem != null) { bubble() }
+        if (templateProblem != null) { bubble() }
         Query.unchecked(dialect, parts, targetList)
       }
 
       public get accumulated(): Query { build() orelse panic() }
 
-`templateProblem` says what's wrong with the query so far, or null.
+`templateProblem` says why `build` would refuse the template as it is
+now, or is null if it wouldn't: a problem found as the template came
+in, such as a hole in a quote; the template ending inside a quote or
+block comment; and, for the common dialect, every problem the parser
+and the checks find, such as `/` without a float operand. Reading it
+doesn't change the builder, so more can be added after; a template
+that's only half written reads as one that ends there. A common
+template's parse and checks run once, when it or `build` first needs
+them, and again only after more is added or the targets change.
 
       public get templateProblem(): String? {
         flush();
-        problem
+        if (problem != null) { return problem; }
+        let common = this.common;
+        if (common != null) {
+          if (!checked) {
+            wholeProblem = common.endProblem() ?? commonProblem(common, holes.toList(), targetList);
+            checked = true;
+          }
+          wholeProblem
+        } else if (lexer.inLineComment) {
+          // `build` ends a line comment, so the template doesn't end
+          // in one.
+          null
+        } else {
+          lexer.endProblem()
+        }
       }
 
       private flush(): Void {
@@ -548,6 +571,7 @@ start and end.
         let text = pending.toString();
         pending = new StringBuilder();
         hasPending = false;
+        checked = false;
         let found = lexer.scan(text);
         if (found != null) { fail(found); }
         if (hasCodePoint(text, 0)) { fail("NUL in template text"); }

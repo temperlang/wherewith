@@ -916,6 +916,9 @@ unknown for columns and nested queries. The checker refuses:
   `INTEGER` or `DOUBLE`.
 - **`NULL`:** a comparison with `NULL`, `NULL` in an `IN` list, or
   `WHEN NULL` in a simple `CASE`, which are never true; use `IS NULL`.
+  A value hole holding null counts the same as `NULL` written in the
+  text, since every value is known when the query is built:
+  `a = ${null}` is refused, while `COALESCE(${null}, a)` is fine.
 - **`LIKE`:** without `ESCAPE`, only a literal pattern, since
   PostgreSQL and MySQL read `\` in it as an escape and SQLite and
   DuckDB don't; with it, one character other than `'`, `%`, or `_`,
@@ -1014,6 +1017,7 @@ need.
             let items = e.items;
             for (let item of items) {
               if (isLiteral(item, literalNull)) { fail("NULL in an IN list never matches; use IS NULL", item.at); }
+              if (isNullValue(item)) { fail("a null value in an IN list never matches; use IS NULL", item.at); }
               compare(k, check(item), item.at);
             }
             kindBoolean
@@ -1078,6 +1082,11 @@ Comparisons and arithmetic.
             let shown = lexer.tokenText(e.at);
             let hint = if (op == opEq) { "; use IS NULL" } else if (op == opNe) { "; use IS NOT NULL" } else { "" };
             fail("${shown} NULL is never true${hint}", e.at);
+          }
+          if (isNullValue(e.left) || isNullValue(e.right)) {
+            let shown = lexer.tokenText(e.at);
+            let hint = if (op == opEq) { "; use IS NULL" } else if (op == opNe) { "; use IS NOT NULL" } else { "" };
+            fail("${shown} with a null value is never true${hint}", e.at);
           }
           compare(left, right, e.at);
           return kindBoolean;
@@ -1176,6 +1185,7 @@ Comparisons and arithmetic.
           let w = whens[i];
           if (subject != null) {
             if (isLiteral(w, literalNull)) { fail("WHEN NULL never matches; use WHEN x IS NULL", w.at); }
+            if (isNullValue(w)) { fail("WHEN with a null value never matches; use WHEN x IS NULL", w.at); }
             compare(subjectKind, check(w), w.at);
           } else {
             condition(check(w), w);
@@ -1378,6 +1388,12 @@ unknown and `NULL`.
 
       private isLiteral(e: CommonExpr, literal: Int): Boolean {
         e is LiteralExpr && e.literal == literal
+      }
+
+`isNullValue` is whether an expression is a hole holding a null value.
+
+      private isNullValue(e: CommonExpr): Boolean {
+        e is ValueExpr && holeValue(e.hole) is SqlNull
       }
 
 `literalSign` is a literal number's sign, with its `-` or `+`: -1, 0,
