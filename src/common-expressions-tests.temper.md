@@ -63,6 +63,8 @@ tokens, as the builder puts it.
       @overload("append")
       public appendInt(x: Int): Void { appendValue(new SqlInt(x.toInt64())); }
       @overload("append")
+      public appendInt64(x: Int64): Void { appendValue(new SqlInt(x)); }
+      @overload("append")
       public appendFloat64(x: Float64): Void { appendValue(new SqlFloat(x)); }
       @overload("append")
       public appendBoolean(x: Boolean): Void { appendValue(new SqlBool(x)); }
@@ -462,6 +464,40 @@ text is: in a comparison, in an `IN` list, and after `WHEN` in a simple
       assert(expr"${n} IS NULL" == "? IS NULL");
       let nick: String? = null;
       assert(expr"a = ${nick}" == at("= with a null value is never true; use IS NULL", 1, 3, "a = ${h}"));
+    }
+
+## Constants
+
+Arithmetic on constants is refused where its result overflows a 64-bit
+integer or isn't a finite float, whether or not it's negated, at the
+operator that overflows. Rendering's folding is in the
+[rendering tests](common-rendering-tests.temper.md#constants).
+
+    test("common expression constant overflow") {
+      let h = holeMark;
+      let min = -0x8000_0000_0000_0000_i64;
+      let max = 0x7FFF_FFFF_FFFF_FFFF_i64;
+      let over = "constant arithmetic overflows a 64-bit integer; databases differ";
+      let infinite = "constant arithmetic gives infinity or NaN; databases differ";
+      assert(expr"-${min}" == at(over, 1, 1, "-${h}"));
+      assert(expr"a + -(${min})" == at(over, 1, 5, "a + -(${h})"));
+      assert(expr"-(${max} + 1)" == at(over, 1, 8, "-(${h} + 1)"));
+      assert(expr"${max} + 1" == at(over, 1, 6, "${h} + 1"));
+      assert(expr"${min} - 1" == at(over, 1, 6, "${h} - 1"));
+      assert(expr"${max} * -2" == at(over, 1, 6, "${h} * -2"));
+      assert(expr"${min} * -1" == at(over, 1, 6, "${h} * -1"));
+      assert(expr"abs(${min})" == at(over, 1, 1, "abs(${h})"));
+      assert(expr"-CAST(${min} AS INTEGER)" == at(over, 1, 1, "-CAST(${h} AS INTEGE"));
+      assert(expr"${1.0e308} * 10" == at(infinite, 1, 6, "${h} * 10"));
+      assert(expr"-(${1.0e308} + ${1.0e308})" == at(infinite, 1, 8, "-(${h} + ${h})"));
+      // Up to the limits, and anything with a column, pass.
+      assert(expr"-${max}" == "-?");
+      assert(expr"-(${min} + 1)" == "-(? + 1)");
+      assert(expr"${min} % -1" == "? % -1");
+      assert(expr"-(${min} % ${max})" == "-(? % ?)");
+      assert(expr"a - ${min}" == "a - ?");
+      assert(expr"-(a * ${max} * ${max})" == "-(a * ? * ?)");
+      assert(expr"-(${1.0e308} - ${1.0e308})" == "-(? - ?)");
     }
 
 ## Depth

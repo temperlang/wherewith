@@ -233,10 +233,17 @@ read it differently, or some would refuse it.
         new Pair("SELECT u.a FROM t GROUP BY t.a", new Pair("u.a is neither grouped nor aggregated; databases differ", 8)),
         new Pair("SELECT a + 1 FROM t GROUP BY a + 2", new Pair("a is neither grouped nor aggregated; databases differ", 8)),
         new Pair("SELECT a, b FROM t GROUP BY 1", new Pair("b is neither grouped nor aggregated; databases differ", 11)),
-        new Pair("SELECT b AS a FROM t WHERE a > 1", new Pair("a is also a SELECT alias; databases differ on which it means", 28)),
-        new Pair("SELECT b AS a FROM t GROUP BY a", new Pair("a is also a SELECT alias; databases differ on which it means", 31)),
-        new Pair("SELECT b + 1 AS c FROM t JOIN u ON c = 1", new Pair("c is also a SELECT alias; databases differ on which it means", 36)),
-        new Pair("SELECT b AS x FROM t ORDER BY x + 1", new Pair("x is also a SELECT alias; databases differ on which it means", 31)),
+        new Pair("SELECT b AS a FROM t WHERE a > 1", new Pair(aliasColumn("a", "in WHERE it means the column"), 28)),
+        new Pair("SELECT b AS a FROM t GROUP BY a", new Pair(aliasColumn("a", "in GROUP BY it means the column"), 31)),
+        new Pair("SELECT b + 1 AS c FROM t JOIN u ON c = 1", new Pair(aliasColumn("c", "in ON it means the column"), 36)),
+        new Pair(
+          "SELECT b AS a FROM t GROUP BY b HAVING a > 1",
+          new Pair(aliasColumn("a", "in HAVING it means the column if grouped, and else databases differ"), 40),
+        ),
+        new Pair(
+          "SELECT b AS x FROM t ORDER BY x + 1",
+          new Pair(aliasColumn("x", "alone in ORDER BY it means the alias, inside an expression the column"), 31),
+        ),
         new Pair(
           "SELECT b AS \"A\" FROM t ORDER BY a",
           new Pair("a matches a SELECT alias only without regard to case; databases differ", 33),
@@ -357,6 +364,10 @@ qualify it.
       "ORDER BY ${name} is ambiguous for mysql, which names another SELECT item ${name} too; rename the alias"
     }
 
+    let aliasColumn(name: String, reading: String): String {
+      "${name} is both a SELECT alias and a column: ${reading}; rename the alias or qualify the column"
+    }
+
     let pgItem(name: String): String {
       "ORDER BY ${name} would mean a SELECT item for postgres, which names one ${name}; write the column's table"
     }
@@ -397,7 +408,7 @@ target. Leave both out, and they pass.
           "SELECT a FROM t WHERE a IN (SELECT b FROM u LIMIT 1)",
           new Pair("LIMIT in an IN subquery; MySQL refuses it", 51),
         ),
-        new Pair("SELECT *, a FROM t", new Pair("* beside other items; MySQL refuses it; write t.*", 8)),
+        new Pair("SELECT a, * FROM t", new Pair("* after other items; MySQL refuses it; put it first or write t.*", 11)),
       ];
       let found = "${mismatches(mysqlOnly, commonTargets())}${mismatches(mysqlOnly, [Dialect.mysqlNoBackslashEscapes])}";
       assert(found == "") { found }
@@ -407,6 +418,8 @@ target. Leave both out, and they pass.
       assert(canon("SELECT a FROM t WHERE EXISTS (SELECT b FROM u LIMIT 1)") ==
         "SELECT a FROM t WHERE EXISTS (SELECT b FROM u LIMIT 1)");
       assert(canon("SELECT t.*, a FROM t") == "SELECT t.*, a FROM t");
+      // Every database takes a * first.
+      assert(canon("SELECT *, a FROM t") == "SELECT *, a FROM t");
     }
 
 A builder's targets also decide which strings and names its lexer

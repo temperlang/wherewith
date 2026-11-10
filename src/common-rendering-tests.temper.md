@@ -340,11 +340,56 @@ results or `COALESCE` arguments that are all values, strings, or
       assert(sorted.params.length == 3);
       let offset = sql"SELECT a FROM t OFFSET ${3}";
       assert(render(offset, Dialect.sqlite, PlaceholderStyle.colonNamed) == "SELECT \"a\" FROM \"t\" LIMIT -1 OFFSET :p1");
-      // A minus before a negative value gets its space.
-      assert(render(sql"SELECT -${-1} AS n", Dialect.mysql, PlaceholderStyle.percentS) == "SELECT - %s AS `n`");
+      // A minus before a value gets its space.
+      assert(render(sql"SELECT a -${-1} AS n FROM t", Dialect.mysql, PlaceholderStyle.percentS) ==
+        "SELECT `a` - %s AS `n` FROM `t`");
       // Names from holes are quoted the database's way.
       let t = named("My Table");
       assert(render(sql"SELECT a FROM ${t}", Dialect.mysql, PlaceholderStyle.question) == "SELECT `a` FROM `My Table`");
+    }
+
+## Constants
+
+The negation of a [constant](common-expressions.temper.md#constants)
+is folded for each database: written as an integer when it's all
+literals, and otherwise bound as a new value, which PostgreSQL gets
+cast to its type. A float zero is bound as `0.0`. The negation of
+anything else stays, and so does the canonical form.
+
+    test("common rendering folds negated constants") {
+      let found = renderMismatches([
+        [
+          "SELECT -(-1) AS a, -(1 - 2) AS b, -(2 * 3) AS c, - -(-4) AS d, -abs(-5) AS e, -CAST(6 AS INTEGER) AS f, 7 - -(-1) AS g, -a AS h, -(a + -(-1)) AS i FROM t",
+          "SELECT 1 AS `a`, 1 AS `b`, -6 AS `c`, -4 AS `d`, -5 AS `e`, -6 AS `f`, 7 - 1 AS `g`, -`a` AS `h`, -(`a` + 1) AS `i` FROM `t`",
+          "", "", "",
+        ],
+        ["SELECT a FROM t WHERE a = -(2 - 3) + -1", "SELECT `a` FROM `t` WHERE `a` = (1 + (-1))", "", "", ""],
+      ]);
+      assert(found == "") { found }
+      let v = sql"SELECT -${-1} AS p, -(${2} - ${5}) AS q, -${1.5} AS r, -(${0.5} * 0) AS s, a + -${3} AS u FROM t WHERE b = -(${2} % ${3})";
+      assert(render(v, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT CAST($1 AS BIGINT) AS \"p\", CAST($2 AS BIGINT) AS \"q\", CAST($3 AS DOUBLE PRECISION) AS \"r\", CAST($4 AS DOUBLE PRECISION) AS \"s\", \"a\" + CAST($5 AS BIGINT) AS \"u\" FROM \"t\" WHERE \"b\" = CAST($6 AS BIGINT)");
+      assert(render(v, Dialect.mysql, PlaceholderStyle.percentS) ==
+        "SELECT %s AS `p`, %s AS `q`, %s AS `r`, %s AS `s`, `a` + %s AS `u` FROM `t` WHERE `b` = %s");
+      let r = v.render(Dialect.sqlite, PlaceholderStyle.question) orelse panic();
+      let texts = new ListBuilder<String>();
+      for (let p of r.params) { texts.add(paramText(p)); }
+      assert(texts.join(" ", fn (s: String): String { s }) == "int:1 int:3 float:-1.5 float:0.0 int:-3 int:-2") {
+        texts.join(" ", fn (s: String): String { s })
+      }
+      // The query keeps its own values, and the canonical form its own.
+      assert(v.params.length == 8);
+      let c = v.render(Dialect.common, PlaceholderStyle.question) orelse panic();
+      assert(c.params.length == 8);
+      // PostgreSQL names a folded value after its type, as a value.
+      let named = sql"SELECT -${-1}, a FROM t ORDER BY int8";
+      assert(render(named, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT CAST($1 AS BIGINT), \"a\" FROM \"t\" ORDER BY \"t\".\"int8\" NULLS FIRST");
+      // An unchecked query refuses an overflow when it renders.
+      let min = -0x8000_0000_0000_0000_i64;
+      let loose = Query.unchecked(Dialect.common, [textPart("SELECT -"), new QueryParam(new SqlInt(min))]);
+      assert(loose.renderProblem(Dialect.sqlite, PlaceholderStyle.question) ==
+        "constant arithmetic overflows a 64-bit integer; databases differ");
     }
 
 ## Strings

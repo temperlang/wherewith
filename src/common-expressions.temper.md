@@ -909,6 +909,10 @@ unknown for columns and nested queries. The checker refuses:
   and PostgreSQL divide integers to an integer; `%` with a float,
   which SQLite truncates; and `/` or `%` by a literal zero, which
   gives `NULL`, an error, infinity, or NaN.
+- **Constant arithmetic** past a 64-bit integer or a finite float,
+  such as `-${v}` with the smallest integer, or `${v} + 1` with the
+  largest: SQLite turns to a float, DuckDB, MySQL, and MariaDB widen
+  a negation, and the others fail; see [constants](#constants).
 - **Floats written as text:** a float in `||` or cast to `TEXT`, which
   the databases write differently (`1.0` or `1`, say), and a float cast
   to `INTEGER`, which SQLite truncates and the others round.
@@ -1010,6 +1014,7 @@ need.
               kindBoolean
             } else {
               arithmetic(k, e.operand);
+              constant(e);
               if (k == kindInteger || k == kindFloat) { k } else { kindUnknown }
             }
           };
@@ -1108,6 +1113,7 @@ Comparisons and arithmetic.
           if (op == opMod && float && varies(ruleKinds)) { fail("% of a float; SQLite truncates it to an integer", e.at); }
           if (literalSign(e.right) == 0 && varies(ruleKinds)) { fail("${opTexts[op]} by zero; databases differ", e.at); }
         }
+        constant(e);
         if (op == opDiv || float) {
           kindFloat
         } else if (left == kindInteger && right == kindInteger) {
@@ -1225,6 +1231,7 @@ Comparisons and arithmetic.
             fail("CAST of a string that isn't a plain number", e.at);
           }
         }
+        constant(e);
         if (target == castInteger) { kindInteger } else if (target == castDouble) { kindFloat } else { kindText }
       }
 
@@ -1257,6 +1264,7 @@ Comparisons and arithmetic.
         }
         if (callee == fnAbs || callee == fnAvg || callee == fnSum) {
           numeric(first, args[0], name);
+          if (callee == fnAbs) { constant(e); }
           return if (callee == fnAvg || first == kindFloat) {
             kindFloat
           } else if (callee == fnAbs && first == kindInteger) {
@@ -1453,6 +1461,187 @@ for a `DOUBLE`, maybe a point and more digits; at most 18 digits for an
         }
         digits > 0 && (!point || after > 0) && (decimal || digits <= 18)
       }
+
+`constant` refuses arithmetic on constants whose result no database
+can hold alike, wherever it is: an integer past 64 bits, which SQLite
+turns into a float, DuckDB widens or refuses, and the others refuse;
+or a float that isn't finite, which SQLite and DuckDB give and the
+others refuse.
+
+      private constant(e: CommonExpr): Void throws Bubble {
+        let k = constantOf(e, lexer, holes);
+        if (k.kind == constantOverflow) {
+          fail("constant arithmetic overflows a 64-bit integer; databases differ", e.at);
+        } else if (k.kind == constantNotFinite) {
+          fail("constant arithmetic gives infinity or NaN; databases differ", e.at);
+        }
+      }
+    }
+
+## Constants
+
+Every value is known when the query is built, so Wherewith works out
+the negation of a constant itself, and rendering writes or binds the
+result: `-(-1)` is written `1`, and `-${v}` binds `v`'s negation. MySQL
+types the negation of a negative constant integer as `DECIMAL` (and
+MariaDB that of a negative constant expression, such as `-(1 - 2)`),
+where the others give an integer, and MySQL's drivers that fill values
+in client-side send `- -1` for `-${-1}`. Folding gives an integer on
+every database. A negation of anything else, such as a column, stays
+as written, since that's an integer everywhere.
+
+A constant is an integer literal, an integer or float value, or `+`,
+`-`, `*`, `%` (of integers, by anything but zero), a sign, `ABS`, or
+`CAST(… AS INTEGER)` of an integer, applied to constants. Decimal
+literals aren't, since they're exact decimals in all but SQLite,
+whichever way they're negated. The arithmetic is exact, as each
+database's: 64-bit integers, refused where they'd overflow, and
+floats, refused where they aren't finite. A float result of zero is
+bound as `0.0`, since databases keep a `-0.0` differently (SQLite
+negates `0.0` to `0.0`, DuckDB to `-0.0`).
+
+    let constantNone = 0;
+    let constantInteger = 1;
+    let constantFloat = 2;
+    let constantOverflow = 3;
+    let constantNotFinite = 4;
+
+`bound` says whether a value went into it, so rendering binds it
+rather than writing it.
+
+    class Constant(public kind: Int, public integer: Int64, public float: Float64, public bound: Boolean) {
+      public get isNumber(): Boolean { kind == constantInteger || kind == constantFloat }
+
+      public get asFloat(): Float64 {
+        if (kind == constantInteger) { integer.toFloat64Unsafe() } else { float }
+      }
+    }
+
+    let noConstant(): Constant { new Constant(constantNone, 0i64, 0.0, false) }
+
+    let integerConstant(n: Int64, bound: Boolean): Constant { new Constant(constantInteger, n, 0.0, bound) }
+
+    let floatConstant(x: Float64, bound: Boolean): Constant {
+      // Finite floats less themselves are 0.0; infinities and NaN aren't.
+      if (x - x != 0.0) { return new Constant(constantNotFinite, 0i64, 0.0, bound); }
+      new Constant(constantFloat, 0i64, x, bound)
+    }
+
+    let overflowed(bound: Boolean): Constant { new Constant(constantOverflow, 0i64, 0.0, bound) }
+
+    let minInt64 = -0x8000_0000_0000_0000_i64;
+    let maxInt64 = 0x7FFF_FFFF_FFFF_FFFF_i64;
+
+`constantOf` is an expression's value, if it's a constant, or a kind
+saying it isn't, or overflows.
+
+    let constantOf(e: CommonExpr, lexer: CommonLexer, holes: List<QueryPart>): Constant {
+      when (e) {
+        is LiteralExpr -> if (e.literal == literalInteger) {
+          integerConstant(literalInt64(lexer, e.at), false)
+        } else {
+          noConstant()
+        };
+        is ValueExpr -> do {
+          let hole = e.hole;
+          let part = if (hole >= 0 && hole < holes.length) { holes[hole] } else { null };
+          let value = if (part is QueryParam) { part.value } else { null };
+          when (value) {
+            is SqlInt -> integerConstant(value.value, true);
+            is SqlFloat -> floatConstant(value.value, true);
+            else -> noConstant();
+          }
+        };
+        is UnaryExpr -> do {
+          if (e.op == opNot) { return noConstant(); }
+          let x = constantOf(e.operand, lexer, holes);
+          if (e.op == opPos || !x.isNumber) { return x; }
+          if (x.kind == constantFloat) { return floatConstant(-x.float, x.bound); }
+          if (x.integer == minInt64) { return overflowed(x.bound); }
+          integerConstant(-x.integer, x.bound)
+        };
+        is BinaryExpr -> do {
+          let op = e.op;
+          if (op != opAdd && op != opSub && op != opMul && op != opMod) { return noConstant(); }
+          let x = constantOf(e.left, lexer, holes);
+          if (!x.isNumber) { return x; }
+          let y = constantOf(e.right, lexer, holes);
+          if (!y.isNumber) { return y; }
+          constantArithmetic(op, x, y)
+        };
+        is CastExpr -> do {
+          let x = constantOf(e.operand, lexer, holes);
+          if (e.target == castInteger && x.kind != constantFloat) { x } else { noConstant() }
+        };
+        is CallExpr -> do {
+          if (e.callee != fnAbs || e.args.length != 1) { return noConstant(); }
+          let x = constantOf(e.args[0], lexer, holes);
+          if (x.kind == constantFloat) {
+            floatConstant(if (x.float < 0.0) { -x.float } else { x.float }, x.bound)
+          } else if (x.kind == constantInteger && x.integer < 0i64) {
+            if (x.integer == minInt64) { overflowed(x.bound) } else { integerConstant(-x.integer, x.bound) }
+          } else {
+            x
+          }
+        };
+        else -> noConstant();
+      }
+    }
+
+`constantArithmetic` works out `+`, `-`, `*`, or `%` of two numbers,
+checking integers for overflow before it could happen, since Temper's
+integers wrap.
+
+    let constantArithmetic(op: Int, x: Constant, y: Constant): Constant {
+      let bound = x.bound || y.bound;
+      if (x.kind == constantFloat || y.kind == constantFloat) {
+        if (op == opMod) { return noConstant(); }
+        let a = x.asFloat;
+        let b = y.asFloat;
+        return floatConstant(if (op == opAdd) { a + b } else if (op == opSub) { a - b } else { a * b }, bound);
+      }
+      let a = x.integer;
+      let b = y.integer;
+      if (op == opAdd) {
+        if ((b > 0i64 && a > maxInt64 - b) || (b < 0i64 && a < minInt64 - b)) { return overflowed(bound); }
+        integerConstant(a + b, bound)
+      } else if (op == opSub) {
+        if ((b < 0i64 && a > maxInt64 + b) || (b > 0i64 && a < minInt64 + b)) { return overflowed(bound); }
+        integerConstant(a - b, bound)
+      } else if (op == opMul) {
+        if (multiplyOverflows(a, b)) { return overflowed(bound); }
+        integerConstant(a * b, bound)
+      } else if (b == 0i64) {
+        noConstant()
+      } else if (b == -1i64) {
+        integerConstant(0i64, bound)
+      } else {
+        // Neither divides by zero, which is all `orelse` covers.
+        integerConstant((a % b) orelse 0i64, bound)
+      }
+    }
+
+    let multiplyOverflows(a: Int64, b: Int64): Boolean {
+      if (a == 0i64 || b == 0i64) { return false; }
+      if (a > 0i64) {
+        if (b > 0i64) { a > ((maxInt64 / b) orelse 0i64) } else { b < ((minInt64 / a) orelse 0i64) }
+      } else if (b > 0i64) {
+        a < ((minInt64 / b) orelse 0i64)
+      } else {
+        b < ((maxInt64 / a) orelse 0i64)
+      }
+    }
+
+`literalInt64` is an integer literal's value, which the lexer has
+checked fits.
+
+    let literalInt64(lexer: CommonLexer, t: CommonToken): Int64 {
+      let text = lexer.runs[t.run];
+      var n = 0i64;
+      for (var i = t.begin; i < t.end; i = text.next(i)) {
+        n = n * 10i64 + (text[i] - char'0').toInt64();
+      }
+      n
     }
 
 ## Printing
@@ -1469,9 +1658,12 @@ through it.
 With a `target`, it writes for that database instead, as
 [rendering](common-rendering.temper.md) says: explicit parentheses
 (but none around the operands of `AND` and `OR`), every name quoted,
-and the target's own pieces where databases differ. `values` are the
+and the target's own pieces where databases differ, with the
+negation of a constant [folded](#constants). `values` are the
 template's holes, for their types, and `problem` says what it couldn't
 write, such as a name the target refuses in a query made unchecked.
+A template's holes number `values` and then `folded`, the values
+folding made.
 
     class CommonTemplate(public runs: List<String>, public holes: List<Int>) {}
 
@@ -1481,6 +1673,7 @@ write, such as a name the target refuses in a query made unchecked.
       private var out: StringBuilder = new StringBuilder();
       public var target: CommonTarget? = null;
       public var values: List<QueryPart> = new ListBuilder<QueryPart>().toList();
+      public folded: ListBuilder<QueryPart> = new ListBuilder<QueryPart>();
       public var problem: String? = null;
       // Subqueries in expressions around what's being written.
       public var subqueries: Int = 0;
@@ -1511,7 +1704,14 @@ write, such as a name the target refuses in a query made unchecked.
 in parentheses if it has less.
 
       public write(e: CommonExpr, level: Int): Void {
-        let own = levelOf(e);
+        let k = fold(e);
+        let own = if (k == null) {
+          levelOf(e)
+        } else if (!k.bound && k.integer < 0i64) {
+          levelUnary
+        } else {
+          levelPrimary
+        };
         let paren = own < level || (explicit && level > 1 && own < levelPrimary);
         if (paren) { out.append("("); }
         node(e);
@@ -1519,6 +1719,11 @@ in parentheses if it has less.
       }
 
       private node(e: CommonExpr): Void {
+        let k = fold(e);
+        if (k != null) {
+          constant(k);
+          return;
+        }
         when (e) {
           is LiteralExpr -> literal(e);
           is ValueExpr -> hole(e.hole);
@@ -1633,6 +1838,54 @@ in parentheses if it has less.
             out.append(")");
           };
         }
+      }
+
+`fold` is, for a target, a negation's value, if it's of a
+[constant](#constants), or null to write it as it is. A constant that
+overflows is a problem, which only a query made unchecked can reach.
+
+      public fold(e: CommonExpr): Constant? {
+        if (target == null || !(e is UnaryExpr && e.op == opNeg)) { return null; }
+        let k = constantOf(e, lexer, values);
+        if (k.kind == constantOverflow) {
+          fail("constant arithmetic overflows a 64-bit integer; databases differ");
+        } else if (k.kind == constantNotFinite) {
+          fail("constant arithmetic gives infinity or NaN; databases differ");
+        }
+        if (k.isNumber) { k } else { null }
+      }
+
+`constant` writes a folded value: an integer alone, or else bound, as
+a new value, which PostgreSQL gets cast to its type, since nothing
+around it need give one.
+
+      private constant(k: Constant): Void {
+        if (!k.bound) {
+          out.append(k.integer.toString());
+          return;
+        }
+        let float = k.kind == constantFloat;
+        let value: SqlValue = if (!float) {
+          new SqlInt(k.integer)
+        } else if (k.float == 0.0 || k.float == -0.0) {
+          new SqlFloat(0.0)
+        } else {
+          new SqlFloat(k.float)
+        };
+        let index = values.length + folded.length;
+        folded.add(new QueryParam(value));
+        let t = target;
+        if (t != null && t.castsUnknown) {
+          castValue(index, if (float) { "DOUBLE PRECISION" } else { "BIGINT" });
+        } else {
+          hole(index);
+        }
+      }
+
+`part` is a hole's part, among the values or those folding made.
+
+      public part(index: Int): QueryPart {
+        if (index < values.length) { values[index] } else { folded[index - values.length] }
       }
 
 An operand of `AND` or `OR`, for a target: in parentheses only if it's

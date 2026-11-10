@@ -70,10 +70,18 @@ class Raw:
 
 
 @dataclass
+class Exact:
+    """Expected rows whose floats must match to the bit, so a zero's
+    sign counts."""
+
+    rows: list
+
+
+@dataclass
 class Case:
     name: str
     pieces: tuple
-    rows: object  # a list of tuples, ERROR, ACCEPTED, or Raw
+    rows: object  # a list of tuples, ERROR, ACCEPTED, Raw, or Exact
     # Documented differences: engine name to what it gives instead.
     differs: dict = field(default_factory=dict)
     # Built with Query.unchecked, for what the checks refuse, to pin
@@ -217,18 +225,24 @@ CASES = [
     C("SUM of integers", "SELECT sum(score) FROM people", rows=Raw(("Decimal",)),
       sqlite=Raw(("int",)), duckdb=Raw(("int",))),
     # MySQL types the negation of a negative constant integer as
-    # DECIMAL, and PyMySQL fills in values as literals, so `- %s` with
-    # -1 is `- -1`. MariaDB's parser folds `-` before a literal, so only
-    # a negative constant expression gives DECIMAL there.
+    # DECIMAL (MariaDB that of a negative constant expression), and
+    # PyMySQL fills in values as literals, so `- %s` with -1 would be
+    # `- -1`. Rendering folds the negation of a constant instead, so
+    # every engine gives an integer.
     C("negating a negative value", "SELECT -", H(-1), " AS n", rows=[(1,)]),
     C("negating a negative value, type", "SELECT -", H(-1), " AS n", rows=Raw(("int",)),
-      mysql=Raw(("Decimal",)), claim="rendering table, `-x` of a negative constant"),
-    C("negating a negative literal, type", "SELECT -(-1)", rows=Raw(("int",)), mysql=Raw(("Decimal",)),
+      claim="rendering table, `-x` of a negative constant"),
+    C("negating a negative literal, type", "SELECT -(-1)", rows=Raw(("int",)),
       claim="rendering table, `-x` of a negative constant"),
     C("negating a negative constant expression, type", "SELECT -(1 - 2)", rows=Raw(("int",)),
-      mariadb=Raw(("Decimal",)), mysql=Raw(("Decimal",)), claim="rendering table, `-x` of a negative constant"),
+      claim="rendering table, `-x` of a negative constant"),
+    C("negating a negative constant expression of values, type", "SELECT -(", H(1), " - ", H(2), ") AS n",
+      rows=Raw(("int",)), claim="rendering table, `-x` of a negative constant"),
     C("negating a column, type", "SELECT -score FROM people WHERE id = 2", rows=Raw(("int",)),
       claim="rendering table, `-x` of a negative constant (a column stays an integer)"),
+    # SQLite negates 0.0 to 0.0 and DuckDB to -0.0; folding binds 0.0.
+    C("negating a zero float value", "SELECT -", H(0.0), " AS n", rows=Exact([(0.0,)]),
+      claim="rendering table, `-x` of a negative constant (a float zero)"),
     C("NULLIF of values", "SELECT nullif(", H(1), ", ", H(2), ") AS n", rows=[(1,)],
       claim="decided 8: values cast where their type is unknown (NULLIF)"),
     C("collation and accents", "SELECT id FROM people WHERE name = 'emile'", rows=[], mariadb=[(4,)],
@@ -299,10 +313,10 @@ CASES = [
       " LIMIT 1)", rows=[(1,)], mariadb=ERROR, mysql=ERROR, unchecked=True,
       claim="statement checks: `LIMIT` in an `IN` subquery, which MySQL refuses (error 1235)"),
     C("* before other items", "SELECT *, owner FROM pets ORDER BY 1, 2 LIMIT 1", rows=[(1, "cat", 1)],
-      unchecked=True, claim="statement checks: `*` beside other items (first, MySQL takes it)"),
+      claim="statement checks: `*` before other items, which every engine takes"),
     C("* after other items", "SELECT owner, * FROM pets ORDER BY 1, 3 LIMIT 1", rows=[(1, 1, "cat")],
       mariadb=ERROR, mysql=ERROR, unchecked=True,
-      claim="statement checks: `*` beside other items, which MySQL refuses"),
+      claim="statement checks: `*` after other items, which MySQL refuses"),
     C("GROUP BY a column that's also an alias", "SELECT owner % 2 AS owner, count(*) AS n FROM pets"
       " GROUP BY owner ORDER BY 2, 1", rows=[(0, 1), (1, 1), (1, 2)], unchecked=True,
       claim="which of alias and column: GROUP BY reads the column"),
@@ -402,6 +416,14 @@ PROBES = [
     P("TRIM ... FROM", "SELECT trim(BOTH 'xy' FROM 'xyxaxy')", rows=[("a",)], sqlite=ERROR,
       mariadb=[("xa",)], mysql=[("xa",)],
       claim="the parser: TRIM takes one argument (MySQL removes a whole string)"),
+    # What constant arithmetic that overflows gives, which the checks
+    # refuse: SQLite turns to a float, DuckDB widens a negation to a
+    # 128-bit integer, MySQL and MariaDB to DECIMAL, and the rest fail.
+    P("negating the smallest integer", "SELECT -(-9223372036854775807 - 1)", rows=ERROR,
+      sqlite=[(9223372036854775808,)], duckdb=[(9223372036854775808,)], mariadb=[(9223372036854775808,)],
+      mysql=[(9223372036854775808,)], claim="rendering table, `-x` of a negative constant: past 64 bits"),
+    P("adding past the largest integer", "SELECT 9223372036854775807 + 1", rows=ERROR,
+      sqlite=[(9223372036854775808,)], claim="rendering table, `-x` of a negative constant: past 64 bits"),
     P("|| beside arithmetic", "SELECT 1 + 2 || 'a'", rows=[("3a",)], sqlite=[(3,)], mariadb=[(1,)], mysql=[(1,)],
       claim="the parser: `||` beside arithmetic needs parentheses (SQLite binds `||` tighter)"),
     # MySQL drops the backslash of an unknown escape, \x, in a string,
@@ -469,6 +491,9 @@ def same_value(a, b) -> bool:
 def matches(got, want) -> bool:
     if isinstance(want, Raw):
         return isinstance(got, list) and len(got) == 1 and tuple(type(v).__name__ for v in got[0]) == want.types
+    if isinstance(want, Exact):
+        return isinstance(got, list) and len(got) == len(want.rows) and all(
+            rt.same_row(g, w) for g, w in zip(got, want.rows, strict=True))
     if want == ACCEPTED:
         return got != ERROR
     if want == ERROR or got == ERROR:

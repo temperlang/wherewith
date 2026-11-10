@@ -483,7 +483,11 @@ gives the first problem with its position:
   lone surrogates).
 - **Numbers:** integer literals fit a signed 64-bit integer (beyond
   it, SQLite turns to a float and DuckDB fails); decimals have at most
-  18 digits, which DuckDB's `DECIMAL` keeps exactly.
+  18 digits, which DuckDB's `DECIMAL` keeps exactly; and arithmetic on
+  constants (literals and values) stays within 64-bit integers and
+  finite floats, since past them SQLite turns to a float or infinity,
+  DuckDB widens a negation to 128 bits or gives infinity, MySQL and
+  MariaDB widen a negation to `DECIMAL`, and the rest fail.
 - **Constructs:** each one the target's renderer supports, in the
   forms it supports: `LIMIT` inside an `IN` subquery is refused for
   MySQL, which rejects it, say.
@@ -521,7 +525,8 @@ something not selected; a table twice in `FROM`; a column twice in
 `INSERT` or `SET`; and `ON` reading a table joined after it. For MySQL
 targets also: the `UPDATE … SET` trap, a subquery reading the table an
 `UPDATE`, `DELETE`, or `INSERT … VALUES` changes, `LIMIT` in an `IN`
-subquery, and `*` beside other items. Each rests on MySQL's own
+subquery, and `*` after other items (`a, *`; every engine takes
+`*, a`). Each rests on MySQL's own
 behavior, which [engine checks](#engine-checks) names the case for.
 
 Which of alias and column a name means: in `HAVING`, for a column not
@@ -530,7 +535,9 @@ grouped, databases differ; in `WHERE`, `ON`, `GROUP BY`, and inside
 checked in CI, though MySQL's manual suggested the alias in `ORDER
 BY`), but a reader could take it either way, the more so in `ORDER
 BY`, where the same name alone means the alias. So an alias that
-names something else is refused in all of these, for every target.
+names something else is refused in all of these, for every target,
+with a message that says how databases read it there and to rename
+the alias or qualify the column.
 Alone in `ORDER BY`,
 every database matches a `SELECT` item's output name first, but they
 name items differently (2026-11-10, from CI's random queries):
@@ -606,7 +613,9 @@ expression (outside `AND` and `OR` chains), since precedence differs:
 SQLite reads `'a' || 1 + 2` as `('a' || 1) + 2`, PostgreSQL and DuckDB
 as `'a' || (1 + 2)`, and MySQL's `NOT` binds tighter with
 `HIGH_NOT_PRECEDENCE`. That also means it never writes `--` from a
-minus before a negative number. Both MySQL profiles render the same,
+minus before a negative number. The negation of a constant is folded:
+`-(-1)` is written `1`, and `-${v}` binds `v`'s negation (cast for
+PostgreSQL), so MySQL never sees `- -1`. Both MySQL profiles render the same,
 except for string literals, each quoted by its own profile. Each
 rendering then goes through that database's own lexer, as its tag
 would check it, so a value can't land in a quote or comment.
@@ -636,7 +645,7 @@ would check it, so a value can't land in a quote or comment.
 | `1.5` | a float | exact `numeric` | exact `DECIMAL` | exact `DECIMAL` | Document |
 | `AVG` of integers | float | `numeric` | `DECIMAL` | `DOUBLE` | Document |
 | `SUM` of integers | integer | `numeric` | `DECIMAL` | `HUGEINT` (128 bits) | Document |
-| `-x` of a negative constant integer, such as `-(-1)`, `-(1 - 2)`, or `-${v}` with a negative `v` | integer | integer | MySQL: `DECIMAL`, for any negative constant; MariaDB: `DECIMAL` for an expression like `-(1 - 2)`, but an integer for `-(-1)` and for a value its driver fills in as a literal | integer | Document: the same value, of another type; `-x` of a column stays an integer everywhere |
+| `-x` of a negative constant integer, such as `-(-1)`, `-(1 - 2)`, or `-${v}` with a negative `v` | integer | integer | MySQL: `DECIMAL`, for any negative constant; MariaDB: `DECIMAL` for an expression like `-(1 - 2)`, but an integer for `-(-1)` and for a value its driver fills in as a literal | integer | Fold: Wherewith negates a constant (integer literals and values, with `+`, `-`, `*`, `%`, signs, `ABS`, and `CAST` to `INTEGER`) itself, writing an integer for literals and binding the result for values, so every database gives an integer; a result past 64 bits, or a float that isn't finite, is refused, and a float zero binds as `0.0` (SQLite negates `0.0` to `0.0`, DuckDB to `-0.0`); `-x` of a column stays as written, an integer everywhere |
 | A `$1` with no context | n/a | sent untyped, read as text (from 10; before, it fails) | n/a | n/a | Cast to the value's type alone in a `SELECT` list, and among `CASE` results or `COALESCE` or `NULLIF` arguments when nothing else there has a type |
 | Subquery in `FROM` | alias optional | required before 16 | required | optional | Grammar requires an alias |
 
@@ -708,8 +717,8 @@ PyMySQL 1.2.3) confirmed every MySQL row but two, corrected below:
 `ORDER BY` expressions read the column there too, and a negative
 integer in `ORDER BY` is a constant MySQL ignores. It also showed
 MySQL typing the negation of a negative constant integer as `DECIMAL`
-(the `-x` row in the [table](#rendering-per-dialect)), which corpus
-cases added since pin, pending CI. Each MySQL-only claim names the
+(the `-x` row in the [table](#rendering-per-dialect)), which rendering
+now folds, pending CI. Each MySQL-only claim names the
 case that checks it; MySQL's default SQL mode adds
 `ONLY_FULL_GROUP_BY` to MariaDB's. MariaDB 10.6 isn't in CI, so claims
 about it stay unconfirmed.
@@ -732,7 +741,7 @@ Rendering, from the [table](#rendering-per-dialect):
 | `'a' = 'A'`, trailing spaces | Confirmed | Confirmed, with MariaDB's default collation (`utf8mb4_uca1400_ai_ci`) ignoring accents and trailing spaces | Confirmed: the default collation, `utf8mb4_0900_ai_ci`, ignores case and accents but, being `NO PAD`, not trailing spaces, unlike MariaDB's |
 | Comparison results, `1.5`, `AVG`, and `SUM` | Confirmed | Confirmed | Confirmed: as MariaDB |
 | A `$1` with no context | n/a | Corrected and confirmed: sent untyped, PostgreSQL reads it as text, so a number comes back as text; the casts give values their types, alone and in `COALESCE`, `CASE`, `NULLIF`, and `\|\|` | n/a |
-| `-x` of a negative constant integer | Confirmed: integers ("negating a negative literal, type" and the like) | Pending CI: integers, but MariaDB's `DECIMAL` for `-(1 - 2)` | Confirmed for a value PyMySQL fills in (`- -1` is `DECIMAL`, in the runner's nesting cases); pending CI for `-(-1)` and `-(1 - 2)`, and a column staying an integer |
+| `-x` of a negative constant integer | Confirmed: integers ("negating a negative literal, type" and the like), and a float zero folded to `0.0` ("negating a zero float value"); past 64 bits, SQLite gives a float and DuckDB a 128-bit integer ("negating the smallest integer") | Folded, pending CI: integers; PostgreSQL fails past 64 bits | Confirmed unfolded for a value PyMySQL fills in (`- -1` is `DECIMAL`, in the runner's nesting cases); folded, pending CI: integers for values, `-(-1)`, and `-(1 - 2)`, and a column staying one; past 64 bits, `DECIMAL`, by MySQL's and MariaDB's source |
 | Subquery in `FROM` | Confirmed: no alias needed | Confirmed: MariaDB needs one; PostgreSQL 18 doesn't | Confirmed: an alias is required (error 1248) |
 
 Expression rules, from the [parser](#the-parser) and the
@@ -758,10 +767,10 @@ Statement rules, from the [parser](#the-parser) and the
 | A subquery reading the table an `UPDATE` or `DELETE` changes | Confirmed: taken | Confirmed: taken by PostgreSQL and MariaDB (from 10.3) | Confirmed: error 1093 ("UPDATE reading its own table" and "DELETE reading its own table"), which the check for both MySQL profiles rests on |
 | The same in `INSERT … VALUES` | Confirmed: taken | Corrected: taken by MariaDB too, and PostgreSQL | Confirmed: error 1093 ("INSERT VALUES reading its own table"), which alone justifies the check |
 | `LIMIT` in an `IN` subquery | Confirmed: taken | Confirmed: PostgreSQL takes it, MariaDB refuses it | Confirmed: error 1235 ("LIMIT in an IN subquery"), which the check rests on, with MariaDB |
-| `*` beside other items | Confirmed: taken | Confirmed: PostgreSQL takes both, MariaDB `*, a` but not `a, *` | Confirmed: `*, a` taken and `a, *` refused ("* before other items" and "* after other items"), as in MariaDB, so the check could refuse only the second |
+| `*` beside other items | Confirmed: taken | Confirmed: PostgreSQL takes both, MariaDB `*, a` but not `a, *` | Confirmed: `*, a` taken and `a, *` refused ("* before other items" and "* after other items"), as in MariaDB, so the check refuses only the second, and "* before other items" now runs checked |
 | Alias or column, in `WHERE` and `GROUP BY`, and in `HAVING` for a grouped column | Confirmed: the column | Confirmed: the column | Confirmed: the column |
 | The same in `HAVING`, for a column not grouped | Confirmed they differ: SQLite reads the column, DuckDB the alias | Confirmed: PostgreSQL fails, MariaDB reads the alias | Confirmed: the alias |
-| The same inside `ORDER BY` expressions | Confirmed: the column | Confirmed for PostgreSQL, the column; corrected for MariaDB, the column too | Corrected: the column, as everywhere else, not the alias the manual suggested ("ORDER BY an expression of a column that's also an alias"); the alias checks still refuse it, for readers |
+| The same inside `ORDER BY` expressions | Confirmed: the column | Confirmed for PostgreSQL, the column; corrected for MariaDB, the column too | Corrected: the column, as everywhere else, not the alias the manual suggested ("ORDER BY an expression of a column that's also an alias"); the alias checks still refuse it, for readers, saying that alone in `ORDER BY` it means the alias and inside an expression the column |
 | Constants in `ORDER BY` and `GROUP BY` | Confirmed: SQLite skips `'a'` and `1.5` but reads `-1` as a place, failing; DuckDB refuses `'a'` and `1.5`, and reads `-1` as a place too; both group everything by `'a'` | Confirmed for PostgreSQL, which refuses all three and `GROUP BY 'a'`; corrected for MariaDB, which skips `'a'` and `1.5` but refuses `-1` ("Unknown column '-1'"), its parser having folded it into a place | Corrected: skips `'a'` and `1.5`, as MariaDB does, and `-1` too, which it reads as an expression ("ORDER BY a negative integer"), so `-1` fails everywhere but MySQL, and stays refused |
 | `SELECT DISTINCT` ordered by a column not selected | Confirmed: taken, in different orders | Confirmed: PostgreSQL refuses it, MariaDB takes it | Confirmed: error 3065 ("SELECT DISTINCT ordered by a column not selected") |
 | `ON` reading a table joined after it | Confirmed: SQLite takes it, DuckDB fails | Confirmed: both fail | Confirmed: fails |

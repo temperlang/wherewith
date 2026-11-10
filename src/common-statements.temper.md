@@ -669,7 +669,8 @@ For every target:
   column, and elsewhere, though all read the column, readers could
   take it either way; alone in `ORDER BY`, every database reads it as
   the alias, if its case matches, but for the
-  [output names](#output-names) below.
+  [output names](#output-names) below. The refusal says how databases
+  read it there, and to rename the alias or qualify the column.
 - **`SELECT DISTINCT … ORDER BY`** something not selected, which SQLite
   takes and the others refuse.
 - **Names twice:** a table or alias twice in `FROM`, a column twice in
@@ -687,8 +688,9 @@ For MySQL and MariaDB (either profile):
 - **A subquery that reads the table** an `INSERT … VALUES`, `UPDATE`,
   or `DELETE` changes, which MySQL refuses (error 1093), though
   MariaDB takes all three.
-- **`LIMIT` in an `IN` subquery**, and **`*` beside other items**,
-  which MySQL refuses.
+- **`LIMIT` in an `IN` subquery**, and **`*` after other items**
+  (`a, *`), which MySQL refuses; it takes `*, a`, as every database
+  does.
 - **`ORDER BY` an alias** that a plain column has, `SELECT a, b AS a
   … ORDER BY a`, which MySQL refuses as ambiguous.
 
@@ -743,13 +745,14 @@ the query it's in. `inSubquery` adds what `IN` refuses.
       private select(s: SelectStatement): Int throws Bubble {
         let items = s.items;
         var kind = kindUnknown;
-        for (let item of items) {
+        for (var i = 0; i < items.length; i += 1) {
+          let item = items[i];
           let e = item.expr;
           if (e != null) {
             let k = c.check(e);
             if (items.length == 1) { kind = k; }
-          } else if (item.table == null && items.length > 1 && mysql()) {
-            c.fail("* beside other items; MySQL refuses it; write t.*", item.at);
+          } else if (item.table == null && i > 0 && mysql()) {
+            c.fail("* after other items; MySQL refuses it; put it first or write t.*", item.at);
           }
         }
         sources(s);
@@ -877,16 +880,16 @@ either.
           }
         }
         let filter = s.filter;
-        if (filter != null) { aliasRefs(filter, others); }
+        if (filter != null) { aliasRefs(filter, others, "WHERE"); }
         let joins = s.joins;
         for (let join of joins) {
           let condition = join.condition;
-          if (condition != null) { aliasRefs(condition, others); }
+          if (condition != null) { aliasRefs(condition, others, "ON"); }
         }
         let groups = s.groups;
-        for (let g of groups) { aliasRefs(g, others); }
+        for (let g of groups) { aliasRefs(g, others, "GROUP BY"); }
         let having = s.having;
-        if (having != null) { aliasRefs(having, others); }
+        if (having != null) { aliasRefs(having, others, "HAVING"); }
         let orders = s.orders;
         for (let o of orders) {
           let e = o.expr;
@@ -894,19 +897,32 @@ either.
             orderAlias(s, e);
             if (e is ColumnExpr) { outputNames(s, e); }
           } else {
-            aliasRefs(e, others);
+            aliasRefs(e, others, "ORDER BY");
           }
         }
       }
 
-      private aliasRefs(e: CommonExpr, others: ListBuilder<String>): Void throws Bubble {
+`aliasRefs` refuses a column in `clause` that's also an alias, saying
+how databases read it there.
+
+      private aliasRefs(e: CommonExpr, others: ListBuilder<String>, clause: String): Void throws Bubble {
         if (others.isEmpty) { return; }
         if (e is ColumnExpr) {
           if (e.table == null) {
             let name = folded(c.nameText(e.column));
             for (var i = 0; i < others.length; i += 1) {
               if (others[i] == name) {
-                c.fail("${columnText(e)} is also a SELECT alias; databases differ on which it means", e.at);
+                let reading = if (clause == "ORDER BY") {
+                  "alone in ORDER BY it means the alias, inside an expression the column"
+                } else if (clause == "HAVING") {
+                  "in HAVING it means the column if grouped, and else databases differ"
+                } else {
+                  "in ${clause} it means the column"
+                };
+                c.fail(
+                  "${columnText(e)} is both a SELECT alias and a column: ${reading}; rename the alias or qualify the column",
+                  e.at,
+                );
               }
             }
           }
@@ -914,7 +930,7 @@ either.
         }
         if (e is SubqueryExpr) { return; }
         let children = exprChildren(e);
-        for (let child of children) { aliasRefs(child, others); }
+        for (let child of children) { aliasRefs(child, others, clause); }
       }
 
 `columnName` is a column's name, without its table, or else "".
@@ -1370,7 +1386,8 @@ item too, by the name it gives it, which can be a column's:
   it: `length`, `count`, `coalesce`, and `btrim` for `TRIM`;
 - a cast takes its operand's name, if that's a column's, a
   function's, or a subquery's, and else its type's (`int8`, `float8`,
-  or `text`), as does a value alone, which rendering casts;
+  or `text`), as does a value alone, which rendering casts, and a
+  negated constant that rendering binds as a value;
 - `CASE` takes its `ELSE` result's name, the same way, or else `case`;
 - `EXISTS` is named `exists`, and a subquery after its one item;
 - `TRUE` and `FALSE` are taken as `bool`, as older PostgreSQL
@@ -1551,6 +1568,16 @@ strong.
           is ExistsExpr -> do {
             figured = "exists";
             2
+          };
+          is UnaryExpr -> do {
+            // A negated constant that rendering binds is a value, cast.
+            let k = if (e.op == opNeg) { constantOf(e, lexer, holes) } else { noConstant() };
+            if (k.isNumber && k.bound) {
+              figured = postgresTypeNames[if (k.kind == constantFloat) { castDouble } else { castInteger }];
+              1
+            } else {
+              0
+            }
           };
           is LiteralExpr -> if (e.literal == literalTrue || e.literal == literalFalse) {
             figured = "bool";
@@ -1932,7 +1959,7 @@ with the problem, if any, that kept it from being written.
         for (var i = 0; i < runs.length; i += 1) {
           text.append(runs[i]);
           if (i < printed.holes.length) {
-            let part = holes[printed.holes[i]];
+            let part = printer.part(printed.holes[i]);
             if (part is QueryName) {
               let name = part.name.name;
               text.append(if (common) { canonicalName(name) } else { dialect.quoteName(name) orelse panic() });
