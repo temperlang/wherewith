@@ -1,0 +1,85 @@
+# Wherewith tour
+
+## 1. Write it once
+common: SELECT name, COALESCE(nick, name) AS shown FROM users WHERE id IN (?, ?) ORDER BY name NULLS LAST LIMIT ?
+sqlite: SELECT "name", COALESCE("nick", "name") AS "shown" FROM "users" WHERE "id" IN (?, ?) ORDER BY "name" NULLS LAST LIMIT ?
+postgres: SELECT "name", COALESCE("nick", "name") AS "shown" FROM "users" WHERE "id" IN ($1, $2) ORDER BY "name" LIMIT $3
+mysql: SELECT `name`, COALESCE(`nick`, `name`) AS `shown` FROM `users` WHERE `id` IN (%s, %s) ORDER BY `name` IS NULL, `name` LIMIT %s
+duckdb: SELECT "name", COALESCE("nick", "name") AS "shown" FROM "users" WHERE "id" IN ($1, $2) ORDER BY "name" NULLS LAST LIMIT $3
+params: 7, 9, 10
+
+## 2. Values are bound, never spliced
+by hand: SELECT id FROM students WHERE name = 'Robert'); DROP TABLE students; --'
+wherewith: SELECT "id" FROM "students" WHERE "name" = ?
+params: 'Robert''); DROP TABLE students; --'
+a hostile name: SELECT * FROM "students""; DROP TABLE x; --"
+in MySQL: SELECT * FROM `students"; DROP TABLE x; --`
+a hole in quotes: hole inside a quote or comment, at line 1, column 39: dents WHERE name = '
+
+## 3. Refused when it's built
+SELECT a / 2 FROM t: / without a float operand; databases divide integers differently, at line 1, column 10: SELECT a / 2 FROM t
+SELECT a FROM t WHERE b = NULL: = NULL is never true; use IS NULL, at line 1, column 25: CT a FROM t WHERE b = NULL
+SELECT Name FROM t: bare name not lowercase; quote it to keep its case, at line 1, column 8: SELECT Name FROM t
+SELECT a, count(*) AS n FROM t GROUP BY b: a is neither grouped nor aggregated; databases differ, at line 1, column 8: SELECT a, count(*) AS n FRO
+SELECT 'a' || 1 + 2 AS x: arithmetic beside || needs parentheses; databases group them differently, at line 1, column 17: SELECT 'a' || 1 + 2 AS x
+SELECT CASE WHEN a > 1 THEN 'x' ELSE 0 END AS c FROM t: CASE mixes text and a number, at line 1, column 38: a > 1 THEN 'x' ELSE 0 END AS c FROM t
+SELECT a FROM t WHERE id = ?: ? outside quotes; put values in holes, at line 1, column 28: a FROM t WHERE id = ?
+SELECT 1 AS a UNION SELECT 2: UNION isn't in the common dialect yet, at line 1, column 15: SELECT 1 AS a UNION SELECT 2
+SELECT 7 / 2.0 AS x: built
+SELECT a FROM t WHERE b = ${null}: = with a null value is never true; use IS NULL, at line 1, column 25: CT a FROM t WHERE b = ${…}
+
+## 4. What differs, handled
+SELECT id || ':' || name AS tag FROM people
+sqlite: SELECT "id" || ':' || "name" AS "tag" FROM "people"
+postgres: SELECT "id" || ':' || "name" AS "tag" FROM "people"
+mysql: SELECT CONCAT(`id`, ':', `name`) AS `tag` FROM `people`
+duckdb: SELECT "id" || ':' || "name" AS "tag" FROM "people"
+SELECT CAST(score AS INTEGER) AS s, CAST(id AS TEXT) AS t, LENGTH(name) AS n FROM people
+sqlite: SELECT CAST("score" AS INTEGER) AS "s", CAST("id" AS TEXT) AS "t", LENGTH("name") AS "n" FROM "people"
+postgres: SELECT CAST("score" AS BIGINT) AS "s", CAST("id" AS TEXT) AS "t", LENGTH("name") AS "n" FROM "people"
+mysql: SELECT CAST(`score` AS SIGNED) AS `s`, CAST(`id` AS CHAR) AS `t`, CHAR_LENGTH(`name`) AS `n` FROM `people`
+duckdb: SELECT CAST("score" AS BIGINT) AS "s", CAST("id" AS VARCHAR) AS "t", LENGTH("name") AS "n" FROM "people"
+SELECT name FROM people ORDER BY nick DESC OFFSET ${20}
+sqlite: SELECT "name" FROM "people" ORDER BY "nick" DESC LIMIT -1 OFFSET ?
+postgres: SELECT "name" FROM "people" ORDER BY "nick" DESC NULLS LAST OFFSET $1
+mysql: SELECT `name` FROM `people` ORDER BY `nick` DESC LIMIT 18446744073709551615 OFFSET %s
+duckdb: SELECT "name" FROM "people" ORDER BY "nick" DESC NULLS LAST OFFSET $1
+SELECT ${"hi"} AS greeting
+sqlite: SELECT ? AS "greeting"
+postgres: SELECT CAST($1 AS TEXT) AS "greeting"
+mysql: SELECT %s AS `greeting`
+duckdb: SELECT $1 AS "greeting"
+
+## 5. Queries in queries
+postgres: SELECT "name" FROM "users" WHERE "id" IN (SELECT "user_id" FROM "orders" WHERE "total" > $1) AND "active" = $2
+mysql: SELECT `name` FROM `users` WHERE `id` IN (SELECT `user_id` FROM `orders` WHERE `total` > %s) AND `active` = %s
+with LIMIT inside: LIMIT in an IN subquery; MySQL refuses it, at line 1, column 38: people WHERE id IN (${…})
+
+## 6. Building queries in code
+SELECT "id", "title" FROM "orders" ORDER BY "created" NULLS FIRST LIMIT $1 OFFSET $2
+SELECT "id", "title" FROM "orders" WHERE "title" LIKE (CAST($1 AS TEXT) || '%') ESCAPE '!' ORDER BY "created" NULLS FIRST LIMIT $2 OFFSET $3
+SELECT "id", "title" FROM "orders" WHERE "total" >= $1 ORDER BY "Total" DESC NULLS LAST LIMIT $2 OFFSET $3
+for postgres and sqlite: SELECT 'C:\temp' AS "p"
+for mysql: common query checked for postgres, sqlite, not mysql
+
+## 7. Placeholders for each driver
+question: SELECT "name" FROM "users" WHERE "name" LIKE 'a%' ESCAPE '!' AND "id" = ?
+dollarNumbered: SELECT "name" FROM "users" WHERE "name" LIKE 'a%' ESCAPE '!' AND "id" = $1
+percentS: SELECT "name" FROM "users" WHERE "name" LIKE 'a%%' ESCAPE '!' AND "id" = %s
+atNamed: SELECT "name" FROM "users" WHERE "name" LIKE 'a%' ESCAPE '!' AND "id" = @p1
+colonNamed: SELECT "name" FROM "users" WHERE "name" LIKE 'a%' ESCAPE '!' AND "id" = :p1
+colonNamed with 'a:b': text has :, which colonNamed uses
+
+## 8. Each database's own SQL
+upsert: INSERT INTO tags (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id
+for mysql: query checked for postgres, not mysql
+nested: SELECT jsonb_agg(x) FROM (SELECT "user_id" FROM "orders" WHERE "total" > $1) AS s(x)
+mysql, after #: hole inside a quote or comment
+
+## 9. Quoting by hand
+mysql name: `my ``table```
+mysql string: 'it''s \\ fine'
+postgres string: 'it''s \ fine'
+postgres, 64-byte name: name longer than 63 UTF-8 bytes
+postgres, NUL in a string: refused, NUL in string
+Identifier, 64 bytes: refused, name longer than 63 UTF-8 bytes

@@ -6,9 +6,18 @@
   <title>Wherewith: SQL written once, for every database and language</title>
   <meta name="description" content="Write SQL once, in a common dialect, and run it on SQLite, PostgreSQL, MySQL and MariaDB, and DuckDB, from C++, C#, Java, JavaScript, Lua, Python, and Rust, with values always bound as parameters.">
   <link rel="stylesheet" href="style.css">
+  <!-- Wherewith and Temper's runtime, for running the tour in the page. -->
+  <script type="importmap">
+    {
+      "imports": {
+        "wherewith": "./lib/wherewith/index.js",
+        "@temperlang/core": "./lib/temper-core/index.js"
+      }
+    }
+  </script>
   <script type="module" src="app.js"></script>
-  <!-- Without script, every language's code shows, one after another. -->
-  <noscript><style>.lang-panel[hidden] { display: block !important; } .tabs { display: none; }</style></noscript>
+  <!-- Without script, every language's code shows, one after another, and the tour can't run. -->
+  <noscript><style>.lang-panel[hidden] { display: block !important; } .tabs, .tour-run { display: none; }</style></noscript>
 </head>
 <body>
   <a class="skip" href="#languages">Skip to the code</a>
@@ -20,6 +29,7 @@
         <a href="#languages">Code</a>
         <a href="#why">Why</a>
         <a href="#dialects">Dialects</a>
+        <a href="#tour">Tour</a>
         <a href="https://github.com/temperlang/wherewith">GitHub</a>
       </nav>
     </div>
@@ -206,15 +216,27 @@
 
     <section id="tour" aria-labelledby="tour-title">
       <div class="wrap">
-        <h2 id="tour-title">The tour is coming</h2>
+        <h2 id="tour-title">The tour, in seven languages and Temper</h2>
         <p>
-          A tour of the whole API, in every language, comes once the
-          common dialect&#8217;s checks are complete, since the API is still
-          moving. Until then, the
-          <a href="https://github.com/temperlang/wherewith#readme">README</a>
-          and the
-          <a href="https://github.com/temperlang/wherewith/blob/main/docs/design.md">design notes</a>
-          cover it all.
+          One program through the whole API, step by step: writing a query
+          once, binding values, what&#8217;s refused and why, what each
+          database needs written differently, nesting, building queries in
+          code, placeholder styles, each database&#8217;s own SQL, and
+          quoting by hand. Every version prints exactly the same
+          <!--TOUR_LINES--> lines, and CI checks that they do. The Temper
+          writes each query with the <code>sql</code> tag, where the
+          others use a <code>QueryBuilder</code>.
+        </p>
+<!--TOUR-->
+        <p class="tour-run">
+          <button type="button" id="tour-run" class="primary">Run in your browser</button>
+          <span id="tour-run-note">Runs the JavaScript tour in this page, and compares what it prints with every other language.</span>
+        </p>
+        <pre id="tour-output" class="output" tabindex="0" aria-label="What the tour printed in this page" aria-live="polite" hidden></pre>
+        <p class="small-note">
+          The tour stops at what the driver gets. Wherewith&#8217;s tests go
+          further, running such queries through SQLite, DuckDB,
+          PostgreSQL, and MariaDB.
         </p>
       </div>
     </section>

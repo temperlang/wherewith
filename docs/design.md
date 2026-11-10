@@ -671,6 +671,9 @@ Each chunk is one commit, tested on every backend:
 7. **Fuzzing** (small to medium): the generator and mutations.
 8. **Docs** (done, 2026-11-09): the README, the site, and the demos
    lead with the common dialect.
+9. **Tour** (done, 2026-11-10): `demos/tour/` in every language, and
+   in Temper as a test, all printing the same, on the site with each
+   step's code and output. See [the tour](#the-tour-2026-11-10).
 
 ## Parameters per driver
 
@@ -940,3 +943,46 @@ closest to standard SQL.
 13. **Rendering only for targets:** a common query records the targets
     it was checked for, and renders only for them; narrower targets
     relax the checks for constructs those targets read alike.
+
+### The tour (2026-11-10)
+
+The tour walks through the whole public API in nine steps, each
+printing a `## N. Title` heading and what it shows: writing a query
+once, values bound and never spliced, what's refused when a query is
+built, what each database needs written differently, queries in
+queries, building queries in code (with `targets`), placeholder
+styles, each database's own SQL, and quoting by hand. A reader
+choosing between Wherewith and a query builder, an ORM, or SQLGlot
+should see what none of them do: a query that would give different
+results on different databases is refused before it runs, with the
+line, the column, and why.
+
+1. **One program per language,** in `demos/tour/`, built and run with
+   each language's own tools, printing exactly `demos/tour/expected.txt`
+   (85 lines). `demos/run.py` runs the tour after the example, and CI
+   runs it after each backend's tests.
+2. **Temper too,** as a test (`src/tour-tests.temper.md`), since only
+   Temper has the `sql` tag: the other languages build each common
+   query with a `QueryBuilder`, as the tag does. The test collects the
+   lines it would print and checks them against its `tourOutput`, on
+   every backend, and `demos/run.py` checks that `tourOutput` is
+   `expected.txt`. The site shows it after the seven languages, with
+   Python still the default.
+3. **Problems as text:** none of the exceptions carries a message, so
+   the tour prints `templateProblem` and `renderProblem`, which say
+   why without building or rendering, and catches an exception only
+   in the last step, to show each language's form of it.
+4. **Snippet blocks:** each step is a block between `snippet: NAME` and
+   `end snippet`, as in the example; a step may take more than one
+   block, such as a helper and the code that calls it, and the site
+   shows them in order. Every program must have every step.
+5. **Run in your browser,** as on the other libraries' sites: the page
+   loads the JS library only when asked, and the site's build runs the
+   JS tour the same way in Node, failing unless it prints
+   `expected.txt`.
+6. **No real engines:** the tour stops at what the driver gets, so its
+   output is the same everywhere; the engine round trips run such
+   queries for real.
+7. **Refreshing:** later chunks change messages and add refusals,
+   which touch only `expected.txt` and the Temper's `tourOutput`
+   (`demos/run.py` prints what to paste there).

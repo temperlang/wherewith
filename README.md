@@ -107,18 +107,22 @@ and each database has its own file (`sqlite`, `postgres`, `mysql`, and
 `-tests` files.
 
 The same common query, built from each language and rendered for each
-database, is in [`demos/example/`](demos/README.md), and CI checks that
-every one prints the same text.
+database, is in [`demos/example/`](demos/README.md), and a tour of the
+whole API, in each language and in Temper, is in
+[`demos/tour/`](demos/README.md#tour). CI checks that every version of
+each prints the same text.
 
 ### Site
 
 [The site](site/) is one static page: a common query and what each
 database's driver gets, where dialects differ, the same query in Temper
-and in each language, why Wherewith, and each driver's placeholders.
-Its code and SQL come from the example and the Temper tests, and its
-table from the design notes, so it can't drift from them. Build and preview it:
+and in each language, why Wherewith, each driver's placeholders, and
+the tour, which runs in the page too. Its code and SQL come from the
+example, the tour, and the Temper tests, and its table from the design
+notes, so it can't drift from them. Build and preview it:
 
     npm ci --prefix site
+    temper build -b js
     uv run site/build.py
     python3 -m http.server --bind 127.0.0.1 -d site/build
 

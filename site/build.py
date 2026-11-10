@@ -4,13 +4,14 @@
 """Builds Wherewith's site into `site/build/`.
 
     npm ci --prefix site
+    temper build -b js
     uv run site/build.py
     python3 -m http.server --bind 127.0.0.1 -d site/build
 
 The page is static: everything on it is built into `index.html` here, and
-its one small script only switches the language tabs. It needs no Temper
-output, so no `temper build` first. Type-checks that script with
-TypeScript first (`--no-check` skips that, for a quick look).
+its small script only switches the language tabs, and runs the tour when
+asked. Type-checks that script with TypeScript first (`--no-check` skips
+that, for a quick look).
 
 The code comes from code that runs, so it can't go stale:
 
@@ -28,13 +29,28 @@ The code comes from code that runs, so it can't go stale:
   `src/query-tests.temper.md`, between a comment `card: NAME` and a
   comment `end card`: its values, and what each dialect gives for them,
   as the test's asserts check.
+- The tour shows each step's snippet from each program in `demos/tour/`,
+  and from the Temper tour, a test in `src/tour-tests.temper.md`, with
+  that step's part of `demos/tour/expected.txt`, which every one prints
+  (`demos/run.py`, and `temper test` for the Temper). Every program must
+  have every step, and the output's headings must be the steps'.
 
 A snippet is the lines between a comment `snippet: NAME` and a comment
 `end snippet`, each alone on its line, dedented. The build fails if one is
 missing, or if the page has a slot left unfilled, and a card fails it if
-its lines aren't the few shapes `cards` reads.
+its lines aren't the few shapes `cards` reads. A tour's step can be in
+more than one block, such as a helper function and the code that calls
+it, and the page shows them in order.
+
+The tour runs in the page too, from a copy of Temper's JS output for
+Wherewith, with Temper's JS runtime, as plain ES modules, which the page's
+import map names, loaded only when the button is pressed. The build runs
+the JavaScript tour in Node the way the page does (`tour-node.mjs` and
+`tourrun.js`, as on Hrefine's and Kelpto's sites), against the built
+`lib/`, and fails unless it prints `demos/tour/expected.txt`.
 """
 
+import difflib
 import gzip
 import hashlib
 import html
@@ -49,6 +65,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "site"
 OUT = SITE / "build"
 EXAMPLE = ROOT / "demos" / "example"
+TOUR = ROOT / "demos" / "tour"
+TEMPER_TOUR = ROOT / "src" / "tour-tests.temper.md"
+JS = ROOT / "temper.out" / "js"
 TEMPER_TEST = ROOT / "src" / "query-tests.temper.md"
 DESIGN = ROOT / "docs" / "design.md"
 REPO = "https://github.com/temperlang/wherewith"
@@ -66,6 +85,34 @@ LANGUAGES = [
     ("Rust", "rs", "rust/src/main.rs", "//", "cargo run"),
 ]
 DEFAULT_LANGUAGE = "py"
+
+# The tour's programs, as LANGUAGES has them, in demos/tour/, and then the
+# Temper, from the library's tests.
+TOUR_LANGUAGES = [
+    ("C++", "cpp", "cpp/tour.cpp", "//", "cmake -B build && cmake --build build && ./build/tour"),
+    ("C#", "cs", "csharp/Program.cs", "//", "dotnet run"),
+    ("Java", "java", "java/src/main/java/Tour.java", "//", "./gradlew run"),
+    ("JavaScript", "js", "js/tour.js", "//", "npm ci && npm start"),
+    ("Lua", "lua", "lua/tour.lua", "--", "lua -l paths tour.lua"),
+    ("Python", "py", "py/tour.py", "#", "uv run tour.py"),
+    ("Rust", "rs", "rust/src/main.rs", "//", "cargo run"),
+    ("Temper", "temper", None, "//", "temper test"),
+]
+
+# The tour's steps: each snippet's name, and its heading in the output,
+# where it has one.
+TOUR_STEPS = [
+    ("setup", None),
+    ("write-once", "1. Write it once"),
+    ("bound", "2. Values are bound, never spliced"),
+    ("refused", "3. Refused when it's built"),
+    ("differs", "4. What differs, handled"),
+    ("nested", "5. Queries in queries"),
+    ("dynamic", "6. Building queries in code"),
+    ("placeholders", "7. Placeholders for each driver"),
+    ("own-sql", "8. Each database's own SQL"),
+    ("quoting", "9. Quoting by hand"),
+]
 
 # How the page names each dialect in the example's output.
 DIALECTS = {
@@ -94,6 +141,30 @@ def snippet(path, name, comment):
     if end is None:
         raise SystemExit(f"{path.relative_to(ROOT)}: snippet {name!r} has no `{comment} end snippet`.")
     return textwrap.dedent("\n".join(lines[start:end])).strip("\n") + "\n"
+
+
+def snippet_blocks(path, comment):
+    """Every snippet in a file, by name: each of its blocks, dedented,
+    joined by a blank line, in order."""
+    found = {}
+    name = None
+    block = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if text.startswith(f"{comment} snippet: "):
+            if name is not None:
+                raise SystemExit(f"{path.relative_to(ROOT)}: snippet {text!r} starts inside snippet {name!r}.")
+            name, block = text.removeprefix(f"{comment} snippet: "), []
+        elif text == f"{comment} end snippet":
+            if name is None:
+                raise SystemExit(f"{path.relative_to(ROOT)}: `{comment} end snippet` outside a snippet.")
+            found.setdefault(name, []).append(textwrap.dedent("\n".join(block)).strip("\n"))
+            name = None
+        elif name is not None:
+            block.append(line)
+    if name is not None:
+        raise SystemExit(f"{path.relative_to(ROOT)}: snippet {name!r} has no `{comment} end snippet`.")
+    return {name: "\n\n".join(blocks) + "\n" for name, blocks in found.items()}
 
 
 # A small highlighter, after the one on Hrefine's and Chromarite's sites,
@@ -491,6 +562,119 @@ def card(name):
     return "".join(out)
 
 
+def tour_output():
+    """The tour's output, by step: each heading's lines, checked against
+    the steps."""
+    text = (TOUR / "expected.txt").read_text(encoding="utf-8")
+    parts = re.split(r"^## (.*)$", text, flags=re.M)
+    if parts[0].strip() != "# Wherewith tour":
+        raise SystemExit("demos/tour/expected.txt doesn't start with the tour's title.")
+    found = dict(zip(parts[1::2], (p.strip("\n") + "\n" for p in parts[2::2])))
+    titles = [title for _, title in TOUR_STEPS if title]
+    if list(found) != titles:
+        raise SystemExit(f"demos/tour/expected.txt's headings aren't the tour's steps: {list(found)}")
+    return text, found
+
+
+def tour_sources():
+    """Each tour language's snippets, by step, checked for every step."""
+    sources = {}
+    names = [name for name, _ in TOUR_STEPS]
+    for lang, id, path, comment, _ in TOUR_LANGUAGES:
+        file = TEMPER_TOUR if path is None else TOUR / path
+        found = snippet_blocks(file, comment)
+        if set(found) != set(names):
+            raise SystemExit(f"{file.relative_to(ROOT)} has steps {sorted(found)}, not {sorted(names)}.")
+        sources[id] = found
+    return sources
+
+
+def tour_html(sources, outputs):
+    """The tour: a row of language tabs, then each step's code in each
+    language, and what it prints."""
+    tabs = []
+    for name, id, _, _, _ in TOUR_LANGUAGES:
+        on = id == DEFAULT_LANGUAGE
+        controls = " ".join(f"tour-{step}-{id}" for step, _ in TOUR_STEPS) + f" tour-run-{id}"
+        tabs.append(
+            f'<button type="button" role="tab" id="tour-tab-{id}" data-lang="{id}" aria-controls="{controls}" '
+            f'aria-selected="{str(on).lower()}" tabindex="{0 if on else -1}">{esc(name)}</button>'
+        )
+    out = [f'<div class="tabs tour-tabs" role="tablist" aria-label="Tour language">{"".join(tabs)}</div>']
+    for name, id, path, comment, run in TOUR_LANGUAGES:
+        hidden = "" if id == DEFAULT_LANGUAGE else " hidden"
+        if path is None:
+            where = (
+                f'<a href="{REPO}/blob/main/src/tour-tests.temper.md"><code>src/tour-tests.temper.md</code></a>, '
+                f"a test, which checks it prints the same: <code>{esc(run)}</code>"
+            )
+        else:
+            folder = path.split("/")[0]
+            where = (
+                f'<a href="{REPO}/tree/main/demos/tour/{folder}"><code>demos/tour/{folder}</code></a>:'
+                f" <code>{esc(run)}</code>"
+            )
+        out.append(
+            f'<p class="run" role="tabpanel" id="tour-run-{id}" aria-labelledby="tour-tab-{id}"{hidden}>'
+            f"The whole {esc(name)} tour is in {where}</p>"
+        )
+    for step, title in TOUR_STEPS:
+        heading = title or "Setup"
+        out.append(f'<div class="step" id="tour-{step}"><h3>{esc(heading)}</h3>')
+        for name, id, _, comment, _ in TOUR_LANGUAGES:
+            hidden = "" if id == DEFAULT_LANGUAGE else " hidden"
+            out.append(
+                f'<div class="lang-panel" role="tabpanel" id="tour-{step}-{id}" aria-labelledby="tour-tab-{id}"{hidden}>'
+                f"{code_block(sources[id][step], comment, f'{heading}, in {name}')}</div>"
+            )
+        if title:
+            out.append(
+                f'<p class="output-label">It prints:</p>'
+                f'<pre class="output step-output" tabindex="0" aria-label="What {esc(heading)} prints">'
+                f"{''.join(f'<span>{esc(line)}</span>' for line in outputs[title].splitlines())}</pre>"
+            )
+        out.append("</div>")
+    return "\n".join(out)
+
+
+def copy_module(source, dest):
+    """A JS module without its source map comment, as the maps aren't copied."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    text = source.read_text(encoding="utf-8")
+    dest.write_text(re.sub(r"\n//# sourceMappingURL=\S+\s*$", "\n", text), encoding="utf-8")
+
+
+def link_modules(name):
+    """Gives each `./x.js` that a built module imports its file's hash, as
+    the page's references get theirs."""
+    path = OUT / name
+    text = path.read_text(encoding="utf-8")
+
+    def hashed(m):
+        digest = hashlib.sha256((OUT / m[2]).read_bytes()).hexdigest()[:10]
+        return f'{m[1]}"./{m[2]}?v={digest}";'
+
+    path.write_text(re.sub(r'^(import .* from )"\./([\w-]+\.js)";$', hashed, text, flags=re.M), encoding="utf-8")
+
+
+def check_tour_run(expected):
+    """Fails unless the built JS tour, run as the page runs it, prints
+    what every tour prints."""
+    try:
+        run = subprocess.run(
+            ["node", str(SITE / "tour-node.mjs"), str(OUT)], capture_output=True, text=True, encoding="utf-8"
+        )
+    except FileNotFoundError:
+        raise SystemExit("The build needs Node (24 or later), to run the JS tour.")
+    if run.returncode:
+        raise SystemExit(f"The JS tour doesn't run as the page runs it:\n{run.stderr}")
+    if run.stdout != expected:
+        diff = difflib.unified_diff(
+            expected.splitlines(keepends=True), run.stdout.splitlines(keepends=True), "expected.txt", "in the page"
+        )
+        raise SystemExit(f"The JS tour, run as the page runs it, prints otherwise:\n{''.join(diff)}")
+
+
 def sizes(files):
     data = b"".join(f.read_bytes() for f in files)
     return len(data), len(gzip.compress(data, 9))
@@ -505,18 +689,34 @@ def check_js():
 
 
 def main():
+    if not (JS / "wherewith" / "wherewith.internal.js").exists():
+        raise SystemExit("Build the JS library first: temper build -b js")
     if "--no-check" not in sys.argv[1:]:
         check_js()
     temper = snippet(TEMPER_TEST, "temper", "//")
     text, rendered, rest = example_output()
+    tour_text, tour_outputs = tour_output()
+    tour_snippets = tour_sources()
     design = DESIGN.read_text(encoding="utf-8")
 
     shutil.rmtree(OUT, ignore_errors=True)
     OUT.mkdir(parents=True)
     # GitHub Pages serves files as they are, without Jekyll.
     (OUT / ".nojekyll").touch()
-    for name in ["style.css", "app.js"]:
+    for name in ["style.css", "app.js", "tourrun.js"]:
         shutil.copyfile(SITE / name, OUT / name)
+    link_modules("app.js")
+
+    # The library, for running the tour in the page.
+    lib = []
+    for package, folder in [("wherewith", "wherewith"), ("temper-core", "temper-core")]:
+        for path in sorted((JS / folder).glob("*.js")):
+            copy_module(path, OUT / "lib" / package / path.name)
+            lib.append(OUT / "lib" / package / path.name)
+    (OUT / "tour").mkdir()
+    shutil.copyfile(TOUR / "js" / "tour.js", OUT / "tour" / "tour.js")
+    shutil.copyfile(TOUR / "expected.txt", OUT / "tour" / "expected.txt")
+    check_tour_run(tour_text)
 
     page = (SITE / "index.html").read_text(encoding="utf-8")
     parts = {
@@ -527,6 +727,8 @@ def main():
         "OUTPUT": f'<pre class="output" tabindex="0" aria-label="Output">{esc(text)}</pre>',
         "STYLES": styles(design),
         "DIALECTS": dialects(design),
+        "TOUR": tour_html(tour_snippets, tour_outputs),
+        "TOUR_LINES": str(len(tour_text.splitlines())),
         **{f"CARD_{name.upper()}": card(name) for name in CARDS},
     }
     for key, value in parts.items():
@@ -543,8 +745,10 @@ def main():
         page = page.replace(f'"{ref}"', f'"{ref}?v={digest}"')
     (OUT / "index.html").write_text(page, encoding="utf-8")
 
-    raw, gz = sizes([OUT / "index.html", OUT / "style.css", OUT / "app.js"])
-    print(f"The page, with its style and script: {raw} bytes, {gz} gzipped")
+    raw, gz = sizes([OUT / "index.html", OUT / "style.css", OUT / "app.js", OUT / "tourrun.js"])
+    print(f"The page, with its style and scripts: {raw} bytes, {gz} gzipped")
+    raw, gz = sizes(lib)
+    print(f"Wherewith and Temper's JS runtime, loaded to run the tour: {raw} bytes, {gz} gzipped")
     print(f"Built {OUT.relative_to(ROOT)}")
 
 

@@ -64,10 +64,11 @@ jobs:
       - name: Test
         run: temper test -b ${{ matrix.backend }}
 
-      # The example in demos/, which the site shows, must print the same
-      # text in every language. Each language's own tools build it against
-      # the output `temper test` left in temper.out/.
-      - name: Example
+      # The example and the tour in demos/, which the site shows, must
+      # print the same text in every language. Each language's own tools
+      # build them against the output `temper test` left in temper.out/.
+      # The tour's Temper is a test, which `temper test` ran above.
+      - name: Example and tour
         run: python3 demos/run.py ${{ matrix.backend }}
 
       # Round trips through embedded engines, with the Python library:

@@ -19,8 +19,18 @@ jobs:
         with:
           persist-credentials: false
 
-      # The page needs no Temper output: its code comes from the sources,
-      # which the test workflow runs. Node type-checks its script.
+      # Temper's nightly build of main, as in test.yml, for the JS library
+      # the page runs the tour with.
+      - name: Get Temper
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download dev -R temperlang/temper -p '*-linux-x64.tgz' -O - | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP"/temper-*-linux-x64 >> "$GITHUB_PATH"
+
+      # The page's code comes from the sources, which the test workflow
+      # runs. Node type-checks its script, and runs the JS tour as the page
+      # does.
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -29,6 +39,7 @@ jobs:
       - name: Build
         run: |
           npm ci --prefix site
+          temper build -b js
           uv run site/build.py
 
       - uses: actions/upload-pages-artifact@v3

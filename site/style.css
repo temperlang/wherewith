@@ -446,6 +446,87 @@ pre code {
   color: var(--type);
 }
 
+/* The tour: one row of tabs, kept in view, for every step. */
+
+.tour-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: 0;
+  padding: 0.5rem 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.step {
+  margin-top: 1.75rem;
+  /* Clear of the sticky tabs, when a link jumps here. */
+  scroll-margin-top: 3.5rem;
+}
+
+.step h3 {
+  margin: 0 0 0.3rem;
+  font-size: 1.25rem;
+}
+
+.step .output-label {
+  margin-top: 0.5rem;
+}
+
+/* Each line of a step's output on its own, wrapped with a hanging indent,
+   so long refusals read whole. */
+.step-output span {
+  display: block;
+  padding-left: 1.5em;
+  text-indent: -1.5em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* One row of tabs on phones, scrolling sideways, so it covers less. */
+@media (max-width: 40rem) {
+  .tour-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  .tour-tabs button {
+    flex: none;
+  }
+}
+
+.tour-run {
+  scroll-margin-top: 3.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-top: 2rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+button.primary {
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.5rem 1.1rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--surface);
+}
+
+button.primary:hover {
+  filter: brightness(1.1);
+}
+
+button.primary:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
 /* Why. */
 
 .reasons {
