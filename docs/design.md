@@ -518,6 +518,49 @@ targets also: the `UPDATE … SET` trap, a subquery reading the table an
 `UPDATE`, `DELETE`, or `INSERT … VALUES` changes, `LIMIT` in an `IN`
 subquery, and `*` beside other items.
 
+Which of alias and column a name means: in `WHERE`, `ON`, `GROUP BY`,
+`HAVING`, and inside `ORDER BY` expressions, databases differ, so an
+alias that names something else is refused there. Alone in `ORDER BY`,
+every database matches a `SELECT` item's output name first, but they
+name items differently (2026-11-10, from CI's random queries):
+
+- **SQLite and DuckDB** match only aliases, and otherwise read a
+  column, as the common dialect does (checked locally, `*` included).
+- **PostgreSQL** matches unaliased items too, by the name its
+  `FigureColname` gives them: a column's name, a function's (`btrim`
+  for `TRIM`), a cast's operand's if that has one and else its type's
+  (`int8`, `float8`, `text`), `CASE`'s `ELSE` result's or `case`,
+  `exists`, a subquery's item's, and `?column?` for the rest. Two
+  matches that aren't the same column are an error ("ORDER BY "id" is
+  ambiguous"), and one that isn't the column silently sorts by the
+  item: `SELECT CAST(score AS TEXT) … ORDER BY score` sorts text.
+  Rendering for PostgreSQL writes such a column qualified, `people.id`,
+  which always means the input column, as everywhere else; that also
+  holds with `DISTINCT`, since the qualified column matches its item,
+  and with `GROUP BY`, which PostgreSQL resolves against columns first.
+  It can only qualify in a query with one source and no outer query:
+  with joins it can't tell the table, and inside an expression the
+  name could be an outer query's column, so the checks refuse those,
+  asking for the table. An alias that another item is named too is
+  ambiguous there, and refused: `SELECT id, score AS id … ORDER BY id`.
+- **MySQL and MariaDB** match unaliased items too, without regard to
+  case, but name an expression after its text, so only plain columns
+  clash: an alias of a column beside another column of that name is
+  ambiguous there, and refused, but `score + 0 AS id` beside `id` reads
+  as the alias. Two columns that are the same column don't clash on
+  either.
+- **`*`** brings columns the checks can't see. A star column with an
+  alias's name makes that alias ambiguous on PostgreSQL and MySQL (an
+  error, not a different result), and isn't refused, since the schema
+  decides. A qualified column matches the star's own, so qualifying
+  still works.
+- **UNION** isn't in the grammar yet; when it is, its `ORDER BY` can
+  only name output columns, so this needs another look.
+
+The corpus pins both CI queries and the qualified cases, and runs the
+refused alias queries unchecked to confirm PostgreSQL and MariaDB
+refuse them.
+
 Narrower targets relax the checks for the dialects left out: the
 lexer's string and name checks, the MySQL statement checks, and the
 expression checks there because databases differ, when the targets
@@ -549,6 +592,7 @@ would check it, so a value can't land in a quote or comment.
 | `TRUE`, `FALSE` | `TRUE`, `FALSE` (1 and 0, from 3.23) | same | same (1 and 0) | same | Same text; results differ, documented |
 | `a \|\| b` | `a \|\| b` | `a \|\| b`, values cast to `TEXT`, and `a` too if neither is text | `CONCAT(a, b)` | `a \|\| b` | Emulate: MySQL's `\|\|` is `OR` without `PIPES_AS_CONCAT`, and PostgreSQL has no `\|\|` for two numbers; `CONCAT` gives `NULL` on any `NULL`, as `\|\|` does |
 | `LIMIT n OFFSET m` | same | same | same | same | Same |
+| `ORDER BY c` beside an item PostgreSQL names `c`, such as `CAST(c AS TEXT)` | `c` | `t.c` | `c` | `c` | Qualify for PostgreSQL, which would read the item; refuse where the table isn't known |
 | `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` (refuses `LIMIT -1`) | Emulate, as each manual says |
 | Default `NULL` order | smallest | largest | smallest | last, both directions, unless `default_null_order` says otherwise | Common: smallest |
 | `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x NULLS LAST` | `NULLS` where the default differs, and always for DuckDB, whose default is a setting; MySQL, which lacks it, sorts by `x IS NULL` first, repeating `x` and its values (for a place or an alias, its item) |

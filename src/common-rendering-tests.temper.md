@@ -215,6 +215,99 @@ the unwritten order), casts, and `LENGTH`.
         "NULLS FIRST or LAST on the place of a * in ORDER BY, for mysql");
     }
 
+## Output names
+
+PostgreSQL reads a bare name alone in `ORDER BY` as an item it names
+after that column, if there is one, so rendering for it qualifies the
+column, as `t.a`, where the item isn't the column itself: a cast, a
+function named as the column, `CASE`, a subquery, or a value. The
+others read the column, unqualified.
+
+    test("common rendering qualifies ORDER BY columns for postgres") {
+      let found = renderMismatches([
+        [
+          "SELECT id, CAST(id AS DOUBLE) FROM people ORDER BY id",
+          "SELECT `id`, CAST(`id` AS REAL) FROM `people` ORDER BY `id`",
+          "SELECT `id`, CAST(`id` AS DOUBLE PRECISION) FROM `people` ORDER BY `people`.`id` NULLS FIRST",
+          "SELECT `id`, CAST(`id` AS DOUBLE) FROM `people` ORDER BY `id`",
+          "SELECT `id`, CAST(`id` AS DOUBLE) FROM `people` ORDER BY `id` NULLS FIRST",
+        ],
+        [
+          "SELECT CAST(score AS TEXT) FROM people AS p ORDER BY score DESC, p.score",
+          "SELECT CAST(`score` AS TEXT) FROM `people` AS `p` ORDER BY `score` DESC, `p`.`score`",
+          "SELECT CAST(`score` AS TEXT) FROM `people` AS `p` ORDER BY `p`.`score` DESC NULLS LAST, `p`.`score` NULLS FIRST",
+          "SELECT CAST(`score` AS CHAR) FROM `people` AS `p` ORDER BY `score` DESC, `p`.`score`",
+          "SELECT CAST(`score` AS VARCHAR) FROM `people` AS `p` ORDER BY `score` DESC NULLS LAST, `p`.`score` NULLS FIRST",
+        ],
+        [
+          "SELECT length(a), trim(b), c FROM t ORDER BY 1 DESC, \"length\" DESC, \"trim\" DESC, btrim DESC, c DESC",
+          "SELECT LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC, `length` DESC, `trim` DESC, `btrim` DESC, `c` DESC",
+          "SELECT LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC NULLS LAST, `t`.`length` DESC NULLS LAST, `trim` DESC NULLS LAST, `t`.`btrim` DESC NULLS LAST, `c` DESC NULLS LAST",
+          "SELECT CHAR_LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC, `length` DESC, `trim` DESC, `btrim` DESC, `c` DESC",
+          "SELECT LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC NULLS LAST, `length` DESC NULLS LAST, `trim` DESC NULLS LAST, `btrim` DESC NULLS LAST, `c` DESC NULLS LAST",
+        ],
+        [
+          "SELECT CASE WHEN a > 0 THEN b ELSE c END, (SELECT max(b) FROM u) AS m, CAST(a + 1 AS TEXT) FROM t ORDER BY c DESC, \"max\" DESC, \"text\" DESC, a DESC",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS TEXT) FROM `t` ORDER BY `c` DESC, `max` DESC, `text` DESC, `a` DESC",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS TEXT) FROM `t` ORDER BY `t`.`c` DESC NULLS LAST, `max` DESC NULLS LAST, `t`.`text` DESC NULLS LAST, `a` DESC NULLS LAST",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS CHAR) FROM `t` ORDER BY `c` DESC, `max` DESC, `text` DESC, `a` DESC",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS VARCHAR) FROM `t` ORDER BY `c` DESC NULLS LAST, `max` DESC NULLS LAST, `text` DESC NULLS LAST, `a` DESC NULLS LAST",
+        ],
+        [
+          "SELECT (SELECT max(b) FROM u), EXISTS (SELECT 1 FROM u) FROM t ORDER BY \"max\" DESC, \"exists\" DESC",
+          "SELECT (SELECT MAX(`b`) FROM `u`), EXISTS (SELECT 1 FROM `u`) FROM `t` ORDER BY `max` DESC, `exists` DESC",
+          "SELECT (SELECT MAX(`b`) FROM `u`), EXISTS (SELECT 1 FROM `u`) FROM `t` ORDER BY `t`.`max` DESC NULLS LAST, `t`.`exists` DESC NULLS LAST",
+          "",
+          "SELECT (SELECT MAX(`b`) FROM `u`), EXISTS (SELECT 1 FROM `u`) FROM `t` ORDER BY `max` DESC NULLS LAST, `exists` DESC NULLS LAST",
+        ],
+        [
+          "SELECT id, t.id, id AS id FROM t ORDER BY id DESC",
+          "SELECT `id`, `t`.`id`, `id` AS `id` FROM `t` ORDER BY `id` DESC",
+          "SELECT `id`, `t`.`id`, `id` AS `id` FROM `t` ORDER BY `id` DESC NULLS LAST",
+          "",
+          "SELECT `id`, `t`.`id`, `id` AS `id` FROM `t` ORDER BY `id` DESC NULLS LAST",
+        ],
+        [
+          "SELECT x.k, CAST(k AS TEXT) FROM (SELECT kind AS k FROM pets ORDER BY k DESC LIMIT 3) AS x ORDER BY k DESC",
+          "SELECT `x`.`k`, CAST(`k` AS TEXT) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC LIMIT 3) AS `x` ORDER BY `k` DESC",
+          "SELECT `x`.`k`, CAST(`k` AS TEXT) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC NULLS LAST LIMIT 3) AS `x` ORDER BY `x`.`k` DESC NULLS LAST",
+          "SELECT `x`.`k`, CAST(`k` AS CHAR) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC LIMIT 3) AS `x` ORDER BY `k` DESC",
+          "SELECT `x`.`k`, CAST(`k` AS VARCHAR) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC NULLS LAST LIMIT 3) AS `x` ORDER BY `k` DESC NULLS LAST",
+        ],
+        [
+          "SELECT DISTINCT a, CAST(a AS TEXT) FROM t ORDER BY a DESC",
+          "SELECT DISTINCT `a`, CAST(`a` AS TEXT) FROM `t` ORDER BY `a` DESC",
+          "SELECT DISTINCT `a`, CAST(`a` AS TEXT) FROM `t` ORDER BY `t`.`a` DESC NULLS LAST",
+          "SELECT DISTINCT `a`, CAST(`a` AS CHAR) FROM `t` ORDER BY `a` DESC",
+          "SELECT DISTINCT `a`, CAST(`a` AS VARCHAR) FROM `t` ORDER BY `a` DESC NULLS LAST",
+        ],
+        [
+          "SELECT a, CAST(a AS TEXT), count(*) FROM t GROUP BY a ORDER BY a DESC",
+          "SELECT `a`, CAST(`a` AS TEXT), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `a` DESC",
+          "SELECT `a`, CAST(`a` AS TEXT), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `t`.`a` DESC NULLS LAST",
+          "SELECT `a`, CAST(`a` AS CHAR), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `a` DESC",
+          "SELECT `a`, CAST(`a` AS VARCHAR), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `a` DESC NULLS LAST",
+        ],
+        [
+          "INSERT INTO u (a, b) SELECT t.*, CAST(a AS TEXT) FROM s.t ORDER BY a DESC",
+          "INSERT INTO `u` (`a`, `b`) SELECT `t`.*, CAST(`a` AS TEXT) FROM `s`.`t` ORDER BY `a` DESC",
+          "INSERT INTO `u` (`a`, `b`) SELECT `t`.*, CAST(`a` AS TEXT) FROM `s`.`t` ORDER BY `t`.`a` DESC NULLS LAST",
+          "INSERT INTO `u` (`a`, `b`) SELECT `t`.*, CAST(`a` AS CHAR) FROM `s`.`t` ORDER BY `a` DESC",
+          "INSERT INTO `u` (`a`, `b`) SELECT `t`.*, CAST(`a` AS VARCHAR) FROM `s`.`t` ORDER BY `a` DESC NULLS LAST",
+        ],
+      ]);
+      assert(found == "") { found }
+      // A value alone is cast for PostgreSQL, and named after its type.
+      let v = sql"SELECT ${1}, ${"x"}, a FROM t ORDER BY int8 DESC, float8 DESC";
+      assert(render(v, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT CAST($1 AS BIGINT), CAST($2 AS TEXT), \"a\" FROM \"t\" ORDER BY \"t\".\"int8\" DESC NULLS LAST, \"float8\" DESC NULLS LAST");
+      // A name hole is its name.
+      let col = Identifier.named("id") orelse panic();
+      let h = sql"SELECT ${col}, CAST(${col} AS TEXT) FROM t ORDER BY ${col} DESC";
+      assert(render(h, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT \"id\", CAST(\"id\" AS TEXT) FROM \"t\" ORDER BY \"t\".\"id\" DESC NULLS LAST");
+    }
+
 ## Values
 
 Values stay parameters, numbered as rendered: MySQL's `IS NULL`

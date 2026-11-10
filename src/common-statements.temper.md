@@ -664,7 +664,8 @@ For every target:
   column of its own name, used in `WHERE`, `ON`, `GROUP BY`, `HAVING`,
   or inside an `ORDER BY` expression, since some databases read it as
   the alias and others as a column; alone in `ORDER BY`, every
-  database reads it as the alias, if its case matches.
+  database reads it as the alias, if its case matches, but for the
+  [output names](#output-names) below.
 - **`SELECT DISTINCT … ORDER BY`** something not selected, which SQLite
   takes and the others refuse.
 - **Names twice:** a table or alias twice in `FROM`, a column twice in
@@ -683,6 +684,13 @@ For MySQL and MariaDB (either profile):
   or `DELETE` changes, which MySQL refuses.
 - **`LIMIT` in an `IN` subquery**, and **`*` beside other items**,
   which MySQL refuses.
+- **`ORDER BY` an alias** that a plain column has, `SELECT a, b AS a
+  … ORDER BY a`, which MySQL refuses as ambiguous.
+
+For PostgreSQL, a name alone in `ORDER BY` that it would read
+differently, by its [output names](#output-names): an alias that
+another item is named too, and a column, where an item is named after
+it, in a query whose column it can't qualify.
 
 The checker walks a statement once, through the expression checker,
 which holds the holes and targets.
@@ -698,11 +706,19 @@ which holds the holes and targets.
         }
       }
 
-`subquery` checks a subquery, as its own scope for aggregates, and
-gives its kind: its one column's, or unknown. `inSubquery` adds what
-`IN` refuses.
+`subquery` checks a subquery in an expression, as its own scope for
+aggregates, and gives its kind: its one column's, or unknown. A
+subquery in `FROM` is its own scope too, but can't read the columns of
+the query it's in. `inSubquery` adds what `IN` refuses.
 
       public subquery(s: SelectStatement): Int throws Bubble {
+        c.subqueries += 1;
+        let kind = scoped(s);
+        c.subqueries -= 1;
+        kind
+      }
+
+      private scoped(s: SelectStatement): Int throws Bubble {
         let saved = c.aggregates;
         c.aggregates = 0;
         let kind = select(s);
@@ -775,7 +791,7 @@ only tables joined before it.
       private source(s: CommonSource, names: ListBuilder<String>): Void throws Bubble {
         var named = s.alias;
         when (s) {
-          is QuerySource -> c.check(s.query);
+          is QuerySource -> scoped(s.query.query);
           is TableSource -> named = named ?? s.table.name;
         }
         let n = named;
@@ -871,6 +887,7 @@ either.
           let e = o.expr;
           if (isBareColumn(e)) {
             orderAlias(s, e);
+            if (e is ColumnExpr) { outputNames(s, e); }
           } else {
             aliasRefs(e, others);
           }
@@ -927,6 +944,31 @@ that matches only without regard to case, or matches two, is refused.
         } else if (loose == 1 && exact == 0) {
           c.fail("${canonicalName(text)} matches a SELECT alias only without regard to case; databases differ", e.at);
         }
+      }
+
+A bare name in `ORDER BY` that a database would read as another item,
+by its [output names](#output-names). Rendering qualifies a column for
+PostgreSQL where it can: in a query with one source and no outer
+query, whose columns a bare name could be.
+
+      private outputNames(s: SelectStatement, e: ColumnExpr): Void throws Bubble {
+        let names = new OutputNames(c.lexer, c.holes);
+        let name = canonicalName(c.nameText(e.column));
+        if (postgres()) {
+          let clash = names.postgresClash(s, e);
+          if (clash == clashAlias) {
+            c.fail("ORDER BY ${name} is ambiguous for postgres, which names another SELECT item ${name} too; rename the alias", e.at);
+          } else if (clash == clashColumn && !canQualify(s)) {
+            c.fail("ORDER BY ${name} would mean a SELECT item for postgres, which names one ${name}; write the column's table", e.at);
+          }
+        }
+        if (mysql() && names.mysqlClash(s, e)) {
+          c.fail("ORDER BY ${name} is ambiguous for mysql, which names another SELECT item ${name} too; rename the alias", e.at);
+        }
+      }
+
+      private canQualify(s: SelectStatement): Boolean {
+        c.subqueries == 0 && s.source != null && s.joins.isEmpty
       }
 
       private isOrderAlias(s: SelectStatement, e: CommonExpr): Boolean {
@@ -1171,10 +1213,14 @@ there with no table, or the updated table's, may be that column.
 
 ### Helpers
 
-      private mysql(): Boolean {
+      private mysql(): Boolean { targets("mysql") }
+
+      private postgres(): Boolean { targets("postgres") }
+
+      private targets(lexing: String): Boolean {
         let targets = c.targets;
         for (let d of targets) {
-          if (lexingName(d) == "mysql") { return true; }
+          if (lexingName(d) == lexing) { return true; }
         }
         false
       }
@@ -1306,6 +1352,247 @@ does.
       out.toString()
     }
 
+## Output names
+
+Every `SELECT` item has an output name, and a name alone in `ORDER BY`
+can mean one, but the databases name items differently. SQLite and
+DuckDB match only an alias there, and otherwise read a column, so they
+read it as the common dialect does. PostgreSQL matches an unaliased
+item too, by the name it gives it, which can be a column's:
+
+- a column, `t.c`, is named `c`;
+- a function call is named after the function, as PostgreSQL writes
+  it: `length`, `count`, `coalesce`, and `btrim` for `TRIM`;
+- a cast takes its operand's name, if that's a column's, a
+  function's, or a subquery's, and else its type's (`int8`, `float8`,
+  or `text`), as does a value alone, which rendering casts;
+- `CASE` takes its `ELSE` result's name, the same way, or else `case`;
+- `EXISTS` is named `exists`, and a subquery after its one item;
+- `TRUE` and `FALSE` are taken as `bool`, as older PostgreSQL
+  versions name them, which wrote them as casts;
+- anything else, such as an operator, is `?column?`.
+
+So `SELECT id, CAST(id AS DOUBLE) … ORDER BY id` has two items named
+`id`, which PostgreSQL refuses as ambiguous, and `SELECT CAST(score AS
+TEXT) … ORDER BY score` sorts by text there. Rendering for PostgreSQL
+writes such a column with its source's name, `people.id`, which always
+means the column. Items that are the same column don't count, since
+PostgreSQL takes those as one.
+
+Where the common dialect reads an alias, another item of that name
+makes PostgreSQL refuse it as ambiguous: `SELECT id, score AS id …
+ORDER BY id`. MySQL matches items by name too, without regard to
+case, but names an unaliased expression after its text, so only plain
+columns clash there: it refuses the same query, but takes `score + 0
+AS id` beside `id`, as the alias. The checks refuse both.
+
+A `*` brings columns this can't see. PostgreSQL and MySQL refuse an
+alias that one of them has, as with `SELECT t.*, score AS id`, but
+the star's own columns are no trouble, since a qualified name means
+the same column.
+
+`OutputNames` works these out for the checks and the printer, from
+the lexer's text and the holes' names and values.
+
+    let clashNone = 0;
+    let clashColumn = 1;
+    let clashAlias = 2;
+
+    class OutputNames(private lexer: CommonLexer, private holes: List<QueryPart>) {
+      // The name `figure` found last.
+      private var figured: String = "";
+
+`postgresClash` says how PostgreSQL would read a bare name alone in
+`ORDER BY` differently: `clashColumn` for a column, where it would read
+an item named after it, and `clashAlias` for an alias, where another
+item has its name; `clashNone` if it reads it as the common dialect
+does.
+
+      public postgresClash(s: SelectStatement, e: ColumnExpr): Int {
+        if (e.table != null) { return clashNone; }
+        let name = nameText(e.column);
+        let aliased = aliasedItem(s, name, false);
+        let items = s.items;
+        for (let item of items) {
+          let x = item.expr;
+          if (item.alias == null) {
+            if (x != null) {
+              let output = postgresName(x);
+              if (output == name || output.isEmpty) {
+                if (aliased != null) {
+                  if (!sameColumn(aliased.expr, x)) { return clashAlias; }
+                } else if (!(x is ColumnExpr)) {
+                  return clashColumn;
+                }
+              }
+            }
+          }
+        }
+        clashNone
+      }
+
+`mysqlClash` says whether MySQL would refuse a bare name alone in
+`ORDER BY` as ambiguous: an alias of a column, beside another column of
+that name.
+
+      public mysqlClash(s: SelectStatement, e: ColumnExpr): Boolean {
+        if (e.table != null) { return false; }
+        let name = folded(nameText(e.column));
+        let aliased = aliasedItem(s, name, true);
+        let column = if (aliased != null) { aliased.expr } else { null };
+        if (!(column is ColumnExpr)) { return false; }
+        let items = s.items;
+        for (let item of items) {
+          let x = item.expr;
+          if (item.alias == null) {
+            if (x is ColumnExpr) {
+              if (folded(nameText(x.column)) == name && !sameColumn(column, x)) { return true; }
+            }
+          }
+        }
+        false
+      }
+
+`aliasedItem` is the item with an alias `name`, folded or not, if any.
+
+      private aliasedItem(s: SelectStatement, name: String, fold: Boolean): SelectItem? {
+        let items = s.items;
+        for (let item of items) {
+          let alias = item.alias;
+          if (alias != null) {
+            let text = nameText(alias);
+            if ((if (fold) { folded(text) } else { text }) == name) { return item; }
+          }
+        }
+        null
+      }
+
+Two columns are the same if their names are, with the same table or a
+table on only one side.
+
+      private sameColumn(a: CommonExpr?, b: CommonExpr): Boolean {
+        if (a is ColumnExpr) {
+          if (b is ColumnExpr) {
+            if (nameText(a.column) != nameText(b.column)) { return false; }
+            let x = a.table;
+            let y = b.table;
+            if (x != null) {
+              if (y != null) { return nameText(x) == nameText(y); }
+            }
+            return true;
+          }
+        }
+        false
+      }
+
+`postgresName` is an unaliased item's name in PostgreSQL, or "" when
+it can't be known, for a subquery whose first item is a `*`.
+
+      public postgresName(e: CommonExpr): String {
+        if (e is ValueExpr) { return postgresTypeNames[valueCast(e.hole)]; }
+        figured = "?column?";
+        figure(e);
+        figured
+      }
+
+`figure` follows PostgreSQL's `FigureColname`: it sets `figured` and
+gives how strong the name is, 2 for a column's, a function's, or a
+subquery's, 1 for a type's or `case`, and 0, leaving `figured` alone,
+for none. A cast or `CASE` takes the name inside it only if that's
+strong.
+
+      private figure(e: CommonExpr): Int {
+        when (e) {
+          is ColumnExpr -> do {
+            figured = nameText(e.column);
+            2
+          };
+          is CallExpr -> do {
+            figured = postgresFunctionNames[e.callee];
+            2
+          };
+          is CastExpr -> do {
+            let strength = figure(e.operand);
+            if (strength <= 1) {
+              figured = postgresTypeNames[e.target];
+              1
+            } else {
+              strength
+            }
+          };
+          is CaseExpr -> do {
+            let otherwise = e.otherwise;
+            let strength = if (otherwise != null) { figure(otherwise) } else { 0 };
+            if (strength <= 1) {
+              figured = "case";
+              1
+            } else {
+              strength
+            }
+          };
+          is SubqueryExpr -> do {
+            let first = e.query.items[0];
+            let alias = first.alias;
+            let x = first.expr;
+            figured = if (alias != null) {
+              nameText(alias)
+            } else if (x != null) {
+              new OutputNames(lexer, holes).postgresName(x)
+            } else {
+              ""
+            };
+            2
+          };
+          is ExistsExpr -> do {
+            figured = "exists";
+            2
+          };
+          is LiteralExpr -> if (e.literal == literalTrue || e.literal == literalFalse) {
+            figured = "bool";
+            1
+          } else {
+            0
+          };
+          else -> 0;
+        }
+      }
+
+`valueCast` is the cast a value alone gets, as rendering writes it:
+to its type, or `TEXT` for `NULL`.
+
+      private valueCast(hole: Int): Int {
+        let part = if (hole >= 0 && hole < holes.length) { holes[hole] } else { null };
+        let value = if (part is QueryParam) { part.value } else { null };
+        when (value) {
+          is SqlInt -> castInteger;
+          is SqlFloat -> castDouble;
+          is SqlBool -> castBoolean;
+          else -> castText;
+        }
+      }
+
+      public nameText(n: CommonName): String {
+        if (n.hole >= 0 && n.hole < holes.length) {
+          let part = holes[n.hole];
+          if (part is QueryName) { return part.name.name; }
+        }
+        lexer.nameValue(n.token)
+      }
+    }
+
+PostgreSQL's names for the common functions, as it writes them in
+lowercase, and for the types rendering casts to, by the cast numbers,
+with `bool` after them for a value's boolean.
+
+    let postgresFunctionNames: List<String> = [
+      "", "abs", "avg", "coalesce", "count", "length", "lower", "max", "min", "nullif", "replace",
+      "substr", "sum", "btrim", "upper",
+    ];
+
+    let castBoolean = 4;
+
+    let postgresTypeNames: List<String> = ["", "int8", "float8", "text", "bool"];
+
 ## Printing
 
 The statement printer writes through an expression
@@ -1406,10 +1693,37 @@ order differs from the rule's, and on MySQL, which has no `NULLS`,
             p.fail("NULLS FIRST or LAST on the place of a * in ORDER BY, for mysql");
           }
         }
+        let qualifier = postgresQualifier(s, o.expr);
+        if (qualifier != null) {
+          p.name(qualifier);
+          p.text(".");
+        }
         p.write(o.expr, 0);
         if (o.descending) { p.text(" DESC"); }
         if (differs && nulls != nullsEmulated) {
           p.text(if (o.nullsFirst) { " NULLS FIRST" } else { " NULLS LAST" });
+        }
+      }
+
+`postgresQualifier` is the table or alias to write before a bare
+column in `ORDER BY` for PostgreSQL, where it would otherwise read an
+item named after the column, or null. The checks refuse such a column
+where the query's only source can't be the table.
+
+      private postgresQualifier(s: SelectStatement, e: CommonExpr): CommonName? {
+        let t = p.target;
+        if (t == null || lexingName(t.dialect) != "postgres") { return null; }
+        if (!(e is ColumnExpr) || p.subqueries > 0 || !s.joins.isEmpty) { return null; }
+        if (e is ColumnExpr) {
+          if (new OutputNames(p.lexer, p.values).postgresClash(s, e) != clashColumn) { return null; }
+        }
+        let source = s.source;
+        if (source is TableSource) {
+          source.alias ?? source.table.name
+        } else if (source != null) {
+          source.alias
+        } else {
+          null
         }
       }
 
@@ -1486,7 +1800,13 @@ else the item itself; null for the place of a `*`.
       private fromSource(s: CommonSource): Void {
         when (s) {
           is TableSource -> tableName(s.table);
-          is QuerySource -> p.write(s.query, 0);
+          // Not through `p.write`, since it's no subquery in an
+          // expression: its names can't be an outer query's columns.
+          is QuerySource -> do {
+            p.text("(");
+            select(s.query.query);
+            p.text(")");
+          };
         }
         alias(s.alias);
       }

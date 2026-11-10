@@ -67,10 +67,13 @@ class Case:
     rows: object  # a list of tuples, ERROR, or Raw
     # Documented differences: engine name to what it gives instead.
     differs: dict = field(default_factory=dict)
+    # Built with Query.unchecked, for what the checks refuse, to pin
+    # why they refuse it.
+    unchecked: bool = False
 
 
-def C(name, *pieces, rows, **differs):  # noqa: N802
-    return Case(name, pieces, rows, differs)
+def C(name, *pieces, rows, unchecked=False, **differs):  # noqa: N802
+    return Case(name, pieces, rows, differs, unchecked)
 
 
 NOTHING = None
@@ -148,6 +151,26 @@ CASES = [
     C("subquery in FROM", "SELECT x.k, count(*) AS n FROM (SELECT kind AS k FROM pets) AS x GROUP BY x.k"
       " ORDER BY x.k", rows=[("cat", 2), ("dog", 1), ("fish", 1)]),
     C("distinct", "SELECT DISTINCT owner FROM pets ORDER BY owner", rows=[(1,), (2,), (9,)]),
+    # A bare column in ORDER BY beside an item PostgreSQL names after it,
+    # which rendering qualifies for PostgreSQL (the first two from CI's
+    # random queries).
+    C("ORDER BY a column beside its cast",
+      "SELECT id || '-' || score, CAST(id AS DOUBLE), id, -score FROM people WHERE score BETWEEN -1 AND ", H(9),
+      " OR score BETWEEN -1 AND ", H(0), " ORDER BY score DESC NULLS LAST, id",
+      rows=[("5-7", 5.0, 5, -7), ("4-0", 4.0, 4, 0)]),
+    C("ORDER BY a column beside its cast, after others",
+      "SELECT nick, id, length(name), CAST(id AS DOUBLE) FROM people ORDER BY score + id, ratio DESC, id",
+      rows=[("cc", 3, 6, 3.0), (None, 2, 3, 2.0), ("É", 4, 5, 4.0), ("Al", 1, 5, 1.0), (None, 5, 4, 5.0)]),
+    C("ORDER BY a column cast to text", "SELECT CAST(score AS TEXT) FROM people WHERE score IS NOT NULL ORDER BY score",
+      rows=[("-3",), ("0",), ("7",), ("10",)]),
+    C("ORDER BY a column beside its cast, distinct",
+      "SELECT DISTINCT id, CAST(id AS DOUBLE) FROM people WHERE id < 3 ORDER BY id DESC", rows=[(2, 2.0), (1, 1.0)]),
+    C("ORDER BY a column beside its cast, grouped",
+      "SELECT owner, CAST(owner AS TEXT), count(*) FROM pets GROUP BY owner ORDER BY owner DESC",
+      rows=[(9, "9", 1), (2, "2", 1), (1, "1", 2)]),
+    C("ORDER BY a column beside its cast, in FROM",
+      "SELECT x.k, CAST(k AS TEXT) FROM (SELECT owner AS k FROM pets) AS x ORDER BY k DESC, 2",
+      rows=[(9, "9"), (2, "2"), (1, "1"), (1, "1")]),
     # Documented differences, each asserted to still differ.
     C("LIKE's case", "SELECT id FROM people WHERE name LIKE 'b%' ORDER BY id", rows=[],
       sqlite=[(2,)], mariadb=[(2,)]),
@@ -165,6 +188,11 @@ CASES = [
       sqlite=Raw(("float",)), duckdb=Raw(("float",))),
     C("SUM of integers", "SELECT sum(score) FROM people", rows=Raw(("Decimal",)),
       sqlite=Raw(("int",)), duckdb=Raw(("int",))),
+    # What the output-name checks refuse, built unchecked.
+    C("ORDER BY an alias beside a column of its name", "SELECT id, score AS id FROM people ORDER BY id",
+      rows=[(3, None), (2, -3), (4, 0), (5, 7), (1, 10)], unchecked=True, postgres=ERROR, mariadb=ERROR),
+    C("ORDER BY an expression's alias beside a column of its name", "SELECT id, score + 0 AS id FROM people ORDER BY id",
+      rows=[(3, None), (2, -3), (4, 0), (5, 7), (1, 10)], unchecked=True, postgres=ERROR),
 ]
 
 # Statements that change a table, run in order, then read back.
@@ -176,6 +204,12 @@ WRITES = [
     ("UPDATE scratch SET v = ", H("z"), " WHERE id = 99"),
 ]
 WRITTEN = [(1, "a!"), (11, "alice")]
+
+
+def unchecked_common(*pieces):
+    """A common query from text, without the checks."""
+    ww = rt.ww
+    return ww.Query.unchecked(ww.Dialect.common, [ww.QueryText(p) for p in pieces])
 
 
 def common(*pieces, targets=None):
@@ -276,7 +310,7 @@ def check(e, seed: int, n: int) -> None:
             rt.count("corpus queries")
             want = case.differs.get(name, case.rows)
             try:
-                q = common(*case.pieces)
+                q = unchecked_common(*case.pieces) if case.unchecked else common(*case.pieces)
             except Exception as err:  # noqa: BLE001
                 rt.fail("corpus", f"{case.name}: the common query doesn't build ({rt.describe(err)})")
                 continue

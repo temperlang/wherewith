@@ -970,6 +970,9 @@ need.
     ) {
       // Aggregates around the expression being checked.
       public var aggregates: Int = 0;
+      // Subqueries in expressions around it, whose names could be an
+      // outer query's columns.
+      public var subqueries: Int = 0;
       public var problem: String? = null;
 
 `check` gives an expression's kind, or bubbles with `problem`.
@@ -1473,6 +1476,8 @@ write, such as a name the target refuses in a query made unchecked.
       public var target: CommonTarget? = null;
       public var values: List<QueryPart> = new ListBuilder<QueryPart>().toList();
       public var problem: String? = null;
+      // Subqueries in expressions around what's being written.
+      public var subqueries: Int = 0;
 
       public print(e: CommonExpr): CommonTemplate {
         write(e, 0);
@@ -1521,7 +1526,9 @@ in parentheses if it has less.
           };
           is SubqueryExpr -> do {
             out.append("(");
+            subqueries += 1;
             new StatementPrinter(this).select(e.query);
+            subqueries -= 1;
             out.append(")");
           };
           is ExistsExpr -> do {

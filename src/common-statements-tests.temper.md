@@ -292,6 +292,77 @@ every database reads them alike, and `DISTINCT` with the items in
       }
     }
 
+## Output names
+
+A bare name alone in `ORDER BY` that PostgreSQL or MySQL would read
+as another item, by the names they give items: an alias beside an
+item PostgreSQL names the same, or, for MySQL, beside a column of that
+name; and, for PostgreSQL, a column where an item is named after it,
+in a query with joins or inside an expression, where rendering can't
+qualify it.
+
+    test("common output names in ORDER BY") {
+      let both = [
+        new Pair("SELECT a, b AS a FROM t ORDER BY a", new Pair(pgAmbiguous("a"), 34)),
+        new Pair("SELECT b AS a, t.a FROM t ORDER BY a DESC", new Pair(pgAmbiguous("a"), 36)),
+      ];
+      let pgOnly = [
+        new Pair("SELECT CAST(a AS TEXT), b + 0 AS a FROM t ORDER BY a", new Pair(pgAmbiguous("a"), 52)),
+        new Pair("SELECT length(b), c AS length FROM t ORDER BY length", new Pair(pgAmbiguous("\"length\""), 47)),
+        new Pair(
+          "SELECT t.a, CAST(t.a AS TEXT) FROM t JOIN u ON t.a = u.a ORDER BY a",
+          new Pair(pgItem("a"), 67),
+        ),
+        new Pair(
+          "SELECT a FROM t WHERE EXISTS (SELECT b, CAST(b AS TEXT) FROM u ORDER BY b)",
+          new Pair(pgItem("b"), 73),
+        ),
+      ];
+      let all = new ListBuilder<Pair<String, Pair<String, Int> > >();
+      for (let r of both) { all.add(r); }
+      for (let r of pgOnly) { all.add(r); }
+      let mysqlBoth = [
+        new Pair("SELECT a, b AS a FROM t ORDER BY a", new Pair(mysqlAmbiguous("a"), 34)),
+        new Pair("SELECT b AS a, t.a FROM t ORDER BY a DESC", new Pair(mysqlAmbiguous("a"), 36)),
+      ];
+      let found = "${mismatches(all.toList(), commonTargets())}${mismatches(all.toList(), [Dialect.postgres])}${
+        mismatches(mysqlBoth, [Dialect.mysql])}";
+      assert(found == "") { found }
+      for (let r of pgOnly) {
+        assert(narrowed(notPostgres(), r.key) == parsed(r.key, false)) { r.key }
+      }
+      for (let r of both) {
+        assert(narrowed([Dialect.sqlite, Dialect.duckdb], r.key) == parsed(r.key, false)) { r.key }
+      }
+      // A qualified name, an alias of its own column, the same column
+      // twice, and a column no item is named after are fine.
+      let passes = [
+        "SELECT t.a, CAST(t.a AS TEXT) FROM t JOIN u ON t.a = u.a ORDER BY t.a",
+        "SELECT a AS a, a, t.a FROM t ORDER BY a",
+        "SELECT b AS a, c + 1 AS a2 FROM t ORDER BY a",
+        "SELECT a FROM t WHERE EXISTS (SELECT b, CAST(c AS TEXT) FROM u ORDER BY b)",
+        "SELECT a, CAST(a AS TEXT) FROM t ORDER BY a",
+      ];
+      for (let text of passes) {
+        let got = canon(text);
+        assert(got == parsed(text, false)) { "${text}: ${got}" }
+      }
+    }
+
+    let pgAmbiguous(name: String): String {
+      "ORDER BY ${name} is ambiguous for postgres, which names another SELECT item ${name} too; rename the alias"
+    }
+
+    let mysqlAmbiguous(name: String): String {
+      "ORDER BY ${name} is ambiguous for mysql, which names another SELECT item ${name} too; rename the alias"
+    }
+
+    let pgItem(name: String): String {
+      "ORDER BY ${name} would mean a SELECT item for postgres, which names one ${name}; write the column's table"
+    }
+
+    let notPostgres(): List<Dialect> { [Dialect.sqlite, Dialect.mysql, Dialect.duckdb] }
+
 ## Targets
 
 The checks for MySQL and MariaDB apply only when a MySQL profile is a

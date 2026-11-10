@@ -53,6 +53,11 @@ differs, the item goes after `x IS NULL` (or `x IS NULL DESC`), which
 repeats `x` and its values; for a place (`ORDER BY 2`) or an alias,
 `x` is the item it stands for.
 
+PostgreSQL reads a column alone in `ORDER BY` as a `SELECT` item it
+names after the column, if there is one, such as `CAST(c AS TEXT)`, so
+rendering writes the column with its table there, `t.c`, as the
+[output names](common-statements.temper.md#output-names) say.
+
 PostgreSQL types a parameter from what's around it, and fails when
 nothing is (with drivers that send values untyped, such as `pg`), so
 values get a cast to their type where nothing else gives one: alone as
