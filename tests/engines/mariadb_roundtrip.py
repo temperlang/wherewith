@@ -45,6 +45,7 @@ import argparse
 import os
 import sys
 import time
+from decimal import Decimal
 
 import roundtrip as rt
 from roundtrip import H, Style
@@ -129,9 +130,10 @@ class Mariadb(rt.Engine):
     def nul_texts(self) -> list[str]:
         return [] if self.nbe else super().nul_texts()
 
-    # The server rejects names ending in any of its space characters
-    # (my_isspace), and reads table names starting with #mysql50# as
-    # file names.
+    # MariaDB rejects names ending in any of its space characters
+    # (my_isspace), names above U+FFFF, and table names starting with
+    # #mysql50#, which it reads as file names. MySQL 8.4 takes the last
+    # two, but the profile, for both, refuses them all.
     def rejects_name(self, n: str) -> bool:
         return (super().rejects_name(n) or len(n) > 64 or any(ord(c) > 0xFFFF for c in n)
                 or n[-1:] in tuple(" \t\n\v\f\r") or n.startswith("#mysql50#"))
@@ -203,10 +205,13 @@ class Mariadb(rt.Engine):
         deep = tag("CONCAT(", H("a"), ", ", H(deeper), ", ", H("d"), ")")
         t = ww.Identifier.named("n t")
         c = ww.Identifier.named("a\"b`c")
+        # PyMySQL fills in -1 as a literal, and MySQL, unlike MariaDB,
+        # types the negation of a negative constant integer as DECIMAL.
+        negated = Decimal if self.corpus_name == "mysql" else int
         return [
             (tag("SELECT 5-", H(-1)), [(6,)]),
-            (tag("SELECT -", H(-1)), [(1,)]),
-            (tag("SELECT - ", H(-1), "-", H(-1)), [(2,)]),
+            (tag("SELECT -", H(-1)), [(negated(1),)]),
+            (tag("SELECT - ", H(-1), "-", H(-1)), [(negated(2),)]),
             (tag("SELECT 2*-", H(3)), [(-6,)]),
             (tag("SELECT 5-", H(neg)), [(6,)]),
             (tag("SELECT ", H(neg), "-1"), [(-2,)]),

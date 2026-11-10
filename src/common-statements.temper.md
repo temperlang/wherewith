@@ -656,18 +656,20 @@ For every target:
   negative one as none, and the others refuse it.
 - **Constants in `GROUP BY` and `ORDER BY`**, other than an integer
   for a column's place, which PostgreSQL and DuckDB refuse and SQLite
-  and MySQL ignore; a negative integer fails everywhere.
+  and MySQL ignore; a negative integer fails everywhere but MySQL,
+  which ignores it too.
 - **Grouping:** in a query with `GROUP BY` or an aggregate, a column
   outside an aggregate must be one it groups by, since SQLite (and
   MySQL without `ONLY_FULL_GROUP_BY`) takes any row's value, and the
   others refuse it; `*` too.
 - **Aliases:** a `SELECT` alias that names something other than the
   column of its own name, used in `WHERE`, `ON`, `GROUP BY`, `HAVING`,
-  or inside an `ORDER BY` expression, since some databases read it as
-  the alias (DuckDB and MariaDB in `HAVING`, and MySQL inside `ORDER
-  BY`) and others as a column, and readers could take it either way;
-  alone in `ORDER BY`, every database reads it as the alias, if its
-  case matches, but for the [output names](#output-names) below.
+  or inside an `ORDER BY` expression, since in `HAVING` some databases
+  read it as the alias (DuckDB, MariaDB, and MySQL) and others as a
+  column, and elsewhere, though all read the column, readers could
+  take it either way; alone in `ORDER BY`, every database reads it as
+  the alias, if its case matches, but for the
+  [output names](#output-names) below.
 - **`SELECT DISTINCT … ORDER BY`** something not selected, which SQLite
   takes and the others refuse.
 - **Names twice:** a table or alias twice in `FROM`, a column twice in

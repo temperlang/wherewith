@@ -216,6 +216,19 @@ CASES = [
       sqlite=Raw(("float",)), duckdb=Raw(("float",))),
     C("SUM of integers", "SELECT sum(score) FROM people", rows=Raw(("Decimal",)),
       sqlite=Raw(("int",)), duckdb=Raw(("int",))),
+    # MySQL types the negation of a negative constant integer as
+    # DECIMAL, and PyMySQL fills in values as literals, so `- %s` with
+    # -1 is `- -1`. MariaDB's parser folds `-` before a literal, so only
+    # a negative constant expression gives DECIMAL there.
+    C("negating a negative value", "SELECT -", H(-1), " AS n", rows=[(1,)]),
+    C("negating a negative value, type", "SELECT -", H(-1), " AS n", rows=Raw(("int",)),
+      mysql=Raw(("Decimal",)), claim="rendering table, `-x` of a negative constant"),
+    C("negating a negative literal, type", "SELECT -(-1)", rows=Raw(("int",)), mysql=Raw(("Decimal",)),
+      claim="rendering table, `-x` of a negative constant"),
+    C("negating a negative constant expression, type", "SELECT -(1 - 2)", rows=Raw(("int",)),
+      mariadb=Raw(("Decimal",)), mysql=Raw(("Decimal",)), claim="rendering table, `-x` of a negative constant"),
+    C("negating a column, type", "SELECT -score FROM people WHERE id = 2", rows=Raw(("int",)),
+      claim="rendering table, `-x` of a negative constant (a column stays an integer)"),
     C("NULLIF of values", "SELECT nullif(", H(1), ", ", H(2), ") AS n", rows=[(1,)],
       claim="decided 8: values cast where their type is unknown (NULLIF)"),
     C("collation and accents", "SELECT id FROM people WHERE name = 'emile'", rows=[], mariadb=[(4,)],
@@ -304,14 +317,17 @@ CASES = [
     C("WHERE a column that's also an alias", "SELECT id, -score AS score FROM people WHERE score > 0 ORDER BY 1",
       rows=[(1, -10), (5, -7)], unchecked=True, claim="which of alias and column: WHERE reads the column"),
     C("ORDER BY an expression of a column that's also an alias", "SELECT id, -score AS score FROM people"
-      " WHERE score IS NOT NULL ORDER BY score + 0", rows=[(2, 3), (4, 0), (5, -7), (1, -10)],
-      mysql=[(1, -10), (5, -7), (4, 0), (2, 3)], unchecked=True,
-      claim="which of alias and column: inside ORDER BY expressions, the column (MariaDB too), but in MySQL"
-            " the alias"),
+      " WHERE score IS NOT NULL ORDER BY score + 0", rows=[(2, 3), (4, 0), (5, -7), (1, -10)], unchecked=True,
+      claim="which of alias and column: inside ORDER BY expressions, the column everywhere, MariaDB and MySQL"
+            " too"),
     C("ORDER BY a string", "SELECT id FROM people ORDER BY 'a', id", rows=[(1,), (2,), (3,), (4,), (5,)],
       postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
-    C("ORDER BY a negative integer", "SELECT id FROM people ORDER BY -1, id", rows=ERROR, unchecked=True,
-      claim="statement checks: constants in ORDER BY (a negative integer fails everywhere, MariaDB too)"),
+    # MySQL reads -1 as an expression, a constant it ignores, where
+    # MariaDB's parser folds it into a literal, a place.
+    C("ORDER BY a negative integer", "SELECT id FROM people ORDER BY -1, id", rows=ERROR,
+      mysql=[(1,), (2,), (3,), (4,), (5,)], unchecked=True,
+      claim="statement checks: constants in ORDER BY (a negative integer fails everywhere but MySQL, which"
+            " ignores it)"),
     C("ORDER BY a decimal", "SELECT id FROM people ORDER BY 1.5, id", rows=[(1,), (2,), (3,), (4,), (5,)],
       postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
     C("ORDER BY a place past the items", "SELECT id FROM people ORDER BY 2", rows=ERROR,
