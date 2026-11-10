@@ -517,7 +517,8 @@ something not selected; a table twice in `FROM`; a column twice in
 `INSERT` or `SET`; and `ON` reading a table joined after it. For MySQL
 targets also: the `UPDATE … SET` trap, a subquery reading the table an
 `UPDATE`, `DELETE`, or `INSERT … VALUES` changes, `LIMIT` in an `IN`
-subquery, and `*` beside other items.
+subquery, and `*` beside other items. Each rests on MySQL's own
+behavior, which [engine checks](#engine-checks) names the case for.
 
 Which of alias and column a name means: in `HAVING`, for a column not
 grouped, databases differ, and inside `ORDER BY` expressions MySQL's
@@ -625,7 +626,7 @@ would check it, so a value can't land in a quote or comment.
 | `x / 0` | `NULL` | error | `NULL` (error in strict-mode writes) | `inf` (`nan` for `0 / 0`); `%` fails on integers and gives `nan` on floats | Document |
 | `LENGTH(s)` | `length` | `length` | `CHAR_LENGTH` (`LENGTH` counts bytes) | `length` | Map |
 | `UPPER`, `LOWER` | ASCII only (without ICU) | full | full | full | Document |
-| `'a' = 'A'`, trailing spaces | binary | per collation, usually binary | per collation: default ones ignore case, and `PAD SPACE` ones trailing spaces; MariaDB 11.8's default, `utf8mb4_uca1400_ai_ci`, ignores accents too | binary | Document; collation is data |
+| `'a' = 'A'`, trailing spaces | binary | per collation, usually binary | per collation: default ones ignore case, and `PAD SPACE` ones trailing spaces; MariaDB 11.8's default, `utf8mb4_uca1400_ai_ci`, ignores accents too, and MySQL 8.4's, `utf8mb4_0900_ai_ci`, accents but not trailing spaces (`NO PAD`) | binary | Document; collation is data |
 | Comparison results | 1 and 0 | `true` and `false` | 1 and 0 | `true` and `false` | Document; adapters may convert |
 | `1.5` | a float | exact `numeric` | exact `DECIMAL` | exact `DECIMAL` | Document |
 | `AVG` of integers | float | `numeric` | `DECIMAL` | `DOUBLE` | Document |
@@ -659,8 +660,8 @@ MariaDB's [`CAST`](https://mariadb.com/kb/en/cast/) and
 and [casting](https://duckdb.org/docs/current/sql/expressions/cast).
 The engine corpus (`tests/engines/common_corpus.py`, under
 [Testing](#testing)) pins the rows: it runs on SQLite 3.45.1 and
-DuckDB 2.0.0 locally and in CI's `py` job, and on PostgreSQL 18 and
-MariaDB 11.8 in its `engines` job; [engine checks](#engine-checks) has
+DuckDB 2.0.0 locally and in CI's `py` job, and on PostgreSQL 18,
+MariaDB 11.8, and MySQL 8.4 in its `engines` job; [engine checks](#engine-checks) has
 each row's status. Checked on SQLite and DuckDB (2026-11-09):
 
 - **Confirmed:** `OFFSET` alone (and DuckDB refuses `LIMIT -1`), the
@@ -689,66 +690,70 @@ corpus (`tests/engines/common_corpus.py`): a common query; one built
 unchecked, for what the checks refuse; or, for what the parser
 refuses, SQL run on the engine as written. Each case names its claim
 here, so a failing run says which row to fix. SQLite 3.45.1 and DuckDB
-2.0.0 run locally and in CI's `py` job, and PostgreSQL 18 and MariaDB
-11.8.9 in its `engines` job, MariaDB in four SQL modes. CI's first run
-(2026-11-10) confirmed every PostgreSQL row, and every MariaDB row but
-four, corrected below: `ORDER BY` expressions, a negative integer in
-`ORDER BY`, `INSERT … VALUES` reading its own table, and `LIKE`'s `\`
-under `NO_BACKSLASH_ESCAPES`. Neither MySQL itself nor MariaDB 10.6 is
-in CI, so claims about them alone, from the manuals, stay
-unconfirmed.
+2.0.0 run locally and in CI's `py` job, and PostgreSQL 18, MariaDB
+11.8.9, and MySQL 8.4 in its `engines` job, MariaDB and MySQL in four
+SQL modes, through the same runner with each engine's own expected
+rows. CI's first run (2026-11-10) confirmed every PostgreSQL row, and
+every MariaDB row but four, corrected below: `ORDER BY` expressions, a
+negative integer in `ORDER BY`, `INSERT … VALUES` reading its own
+table, and `LIKE`'s `\` under `NO_BACKSLASH_ESCAPES`. MySQL 8.4 joined
+after that run, so its column gives what the manual and the claims
+expect, pending CI, with the case that checks each MySQL-only claim;
+its default SQL mode adds `ONLY_FULL_GROUP_BY` to MariaDB's. MariaDB
+10.6 isn't in CI, so claims about it stay unconfirmed.
 
 Rendering, from the [table](#rendering-per-dialect):
 
-| Row | SQLite and DuckDB | PostgreSQL and MariaDB |
-| --- | --- | --- |
-| `\|\|`: casts, `CONCAT`, and integers beside text (`'a' \|\| 1` is `'a1'`) | Confirmed | Confirmed |
-| `TRUE` and `FALSE`, `LIMIT` and `OFFSET`, and `OFFSET` alone (`LIMIT 18446744073709551615`) | Confirmed | Confirmed |
-| `NULL` order, and `NULLS` (`x IS NULL, x` for MySQL) | Confirmed | Confirmed |
-| `ORDER BY c`, qualified for PostgreSQL | Confirmed | Confirmed |
-| `CAST` type names, and text that isn't a number | Confirmed | Confirmed |
-| `CAST` of a float or decimal to `INTEGER` | Corrected: DuckDB rounds a float's halves to even (`7.5` is 8, `10.5` is 10) and a decimal's away from zero; SQLite truncates both | Confirmed: the same as DuckDB |
-| `LENGTH` (`CHAR_LENGTH`), and `UPPER` and `LOWER` past ASCII | Confirmed | Confirmed, with PostgreSQL's locale `en_US.utf8`, as in its image |
-| `LIKE` with `ESCAPE`, and `LIKE`'s case | Confirmed | Confirmed |
-| `LIKE` without `ESCAPE`, with a `\` | Confirmed | Confirmed for PostgreSQL; corrected for MariaDB, whose `\` escapes in every mode, under `NO_BACKSLASH_ESCAPES` too, where MySQL's manual says MySQL's doesn't (unconfirmed); the check now refuses it for that profile even alone |
-| `7 / 2` | Confirmed | Confirmed |
-| `x / 0` | Corrected: DuckDB's `/` gives `inf` (`nan` for `0 / 0`) on integers too, and `%` fails only on integers, giving `nan` on floats | Confirmed |
-| `'a' = 'A'`, trailing spaces | Confirmed | Confirmed, with MariaDB's default collation (`utf8mb4_uca1400_ai_ci`) ignoring accents and trailing spaces |
-| Comparison results, `1.5`, `AVG`, and `SUM` | Confirmed | Confirmed |
-| A `$1` with no context | n/a | Corrected and confirmed: sent untyped, PostgreSQL reads it as text, so a number comes back as text; the casts give values their types, alone and in `COALESCE`, `CASE`, `NULLIF`, and `\|\|` |
-| Subquery in `FROM` | Confirmed: no alias needed | Confirmed: MariaDB needs one; PostgreSQL 18 doesn't |
+| Row | SQLite and DuckDB | PostgreSQL and MariaDB | MySQL 8.4 |
+| --- | --- | --- | --- |
+| `\|\|`: casts, `CONCAT`, and integers beside text (`'a' \|\| 1` is `'a1'`) | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB |
+| `TRUE` and `FALSE`, `LIMIT` and `OFFSET`, and `OFFSET` alone (`LIMIT 18446744073709551615`) | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB |
+| `NULL` order, and `NULLS` (`x IS NULL, x` for MySQL) | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB |
+| `ORDER BY c`, qualified for PostgreSQL | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB |
+| `CAST` type names, and text that isn't a number | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB (`'Al'` is 0) |
+| `CAST` of a float or decimal to `INTEGER` | Corrected: DuckDB rounds a float's halves to even (`7.5` is 8, `10.5` is 10) and a decimal's away from zero; SQLite truncates both | Confirmed: the same as DuckDB | Pending CI (MySQL 8.4): as MariaDB ("float to integer, halves" and "decimal to integer, halves") |
+| `LENGTH` (`CHAR_LENGTH`), and `UPPER` and `LOWER` past ASCII | Confirmed | Confirmed, with PostgreSQL's locale `en_US.utf8`, as in its image | Pending CI (MySQL 8.4): as MariaDB |
+| `LIKE` with `ESCAPE`, and `LIKE`'s case | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB, case-insensitive |
+| `LIKE` without `ESCAPE`, with a `\` | Confirmed | Confirmed for PostgreSQL; corrected for MariaDB, whose `\` escapes in every mode, under `NO_BACKSLASH_ESCAPES` too; the check now refuses it for that profile even alone | Pending CI (MySQL 8.4): `\` escapes by default and, as the manual says, not at all under `NO_BACKSLASH_ESCAPES` (the probe's `mysql_nbe` rows), unlike MariaDB; that disagreement under one profile is why it's refused there even alone |
+| `7 / 2` | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB |
+| `x / 0` | Corrected: DuckDB's `/` gives `inf` (`nan` for `0 / 0`) on integers too, and `%` fails only on integers, giving `nan` on floats | Confirmed | Pending CI (MySQL 8.4): as MariaDB |
+| `'a' = 'A'`, trailing spaces | Confirmed | Confirmed, with MariaDB's default collation (`utf8mb4_uca1400_ai_ci`) ignoring accents and trailing spaces | Pending CI (MySQL 8.4): the default collation, `utf8mb4_0900_ai_ci`, ignores case and accents but, being `NO PAD`, not trailing spaces, unlike MariaDB's |
+| Comparison results, `1.5`, `AVG`, and `SUM` | Confirmed | Confirmed | Pending CI (MySQL 8.4): as MariaDB |
+| A `$1` with no context | n/a | Corrected and confirmed: sent untyped, PostgreSQL reads it as text, so a number comes back as text; the casts give values their types, alone and in `COALESCE`, `CASE`, `NULLIF`, and `\|\|` | n/a |
+| Subquery in `FROM` | Confirmed: no alias needed | Confirmed: MariaDB needs one; PostgreSQL 18 doesn't | Pending CI (MySQL 8.4): an alias is required (error 1248) |
 
 Expression rules, from the [parser](#the-parser) and the
 [checks](#the-check-stage):
 
-| Rule | SQLite and DuckDB | PostgreSQL and MariaDB |
-| --- | --- | --- |
-| `\|\|` beside arithmetic | Confirmed: SQLite reads `1 + 2 \|\| 'a'` as `1 + (2 \|\| 'a')`, which is 3, and DuckDB as `'3a'` | Confirmed (MariaDB's `\|\|` is `OR`) |
-| `TRIM`'s second argument | Confirmed: a set of characters; SQLite has no `TRIM(r FROM s)`, and DuckDB reads `r` there as a set too | Corrected and confirmed: PostgreSQL takes a set, and MariaDB no second argument, but `TRIM(r FROM s)`, removing a whole string, as MySQL's manual says MySQL does |
-| `%` with a float | Confirmed: SQLite truncates (`5.5 % 2` is 1.0) | Confirmed (PostgreSQL has no `%` for `DOUBLE PRECISION`) |
-| Floats in `\|\|` or cast to `TEXT` | Confirmed: both write `2.0`, and SQLite 15 digits | Confirmed: `2` |
-| Booleans in `\|\|` and casts | Confirmed: `1` in SQLite, `true` in DuckDB | Confirmed: `true` in PostgreSQL, which casts a boolean only to text and 32-bit integers, and `1` in MariaDB |
-| `ESCAPE` before an ordinary character | Confirmed alike: it matches the character (refused anyway, as a likely mistake) | Confirmed: alike |
-| `ESCAPE` at the end of a pattern | Confirmed: SQLite matches nothing, DuckDB fails | Confirmed: PostgreSQL fails, MariaDB reads it as itself |
-| Text in arithmetic | Confirmed: SQLite converts (`'1' + 1` is 2, `'Al' + 1` is 1); DuckDB refuses, but reads a string beside a `DOUBLE` as one | Confirmed: PostgreSQL types a string literal from the other operand (`'1' + 1` is 2, `'1.5' + 1` fails) and refuses text columns; MariaDB converts |
+| Rule | SQLite and DuckDB | PostgreSQL and MariaDB | MySQL 8.4 |
+| --- | --- | --- | --- |
+| `\|\|` beside arithmetic | Confirmed: SQLite reads `1 + 2 \|\| 'a'` as `1 + (2 \|\| 'a')`, which is 3, and DuckDB as `'3a'` | Confirmed (MariaDB's `\|\|` is `OR`) | Pending CI (MySQL 8.4): as MariaDB (`\|\|` is a deprecated `OR`) |
+| `TRIM`'s second argument | Confirmed: a set of characters; SQLite has no `TRIM(r FROM s)`, and DuckDB reads `r` there as a set too | Corrected and confirmed: PostgreSQL takes a set, and MariaDB no second argument, but `TRIM(r FROM s)`, removing a whole string, as MySQL's manual says MySQL does | Pending CI (MySQL 8.4): no second argument, and `TRIM(r FROM s)` removes a whole string |
+| `%` with a float | Confirmed: SQLite truncates (`5.5 % 2` is 1.0) | Confirmed (PostgreSQL has no `%` for `DOUBLE PRECISION`) | Pending CI (MySQL 8.4): as MariaDB |
+| Floats in `\|\|` or cast to `TEXT` | Confirmed: both write `2.0`, and SQLite 15 digits | Confirmed: `2` | Pending CI (MySQL 8.4): as MariaDB |
+| Booleans in `\|\|` and casts | Confirmed: `1` in SQLite, `true` in DuckDB | Confirmed: `true` in PostgreSQL, which casts a boolean only to text and 32-bit integers, and `1` in MariaDB | Pending CI (MySQL 8.4): as MariaDB |
+| `ESCAPE` before an ordinary character | Confirmed alike: it matches the character (refused anyway, as a likely mistake) | Confirmed: alike | Pending CI (MySQL 8.4): alike |
+| `ESCAPE` at the end of a pattern | Confirmed: SQLite matches nothing, DuckDB fails | Confirmed: PostgreSQL fails, MariaDB reads it as itself | Pending CI (MySQL 8.4): as MariaDB |
+| Text in arithmetic | Confirmed: SQLite converts (`'1' + 1` is 2, `'Al' + 1` is 1); DuckDB refuses, but reads a string beside a `DOUBLE` as one | Confirmed: PostgreSQL types a string literal from the other operand (`'1' + 1` is 2, `'1.5' + 1` fails) and refuses text columns; MariaDB converts | Pending CI (MySQL 8.4): as MariaDB |
 
 Statement rules, from the [parser](#the-parser) and the
 [checks](#the-check-stage):
 
-| Rule | SQLite and DuckDB | PostgreSQL and MariaDB |
-| --- | --- | --- |
-| Clauses without `FROM` (`WHERE`, `ORDER BY`, `LIMIT`) | Confirmed: taken | Confirmed: taken by PostgreSQL and MariaDB 11.8; MySQL 8.0 and MariaDB 10.6 unconfirmed |
-| A subquery reading the table an `UPDATE` or `DELETE` changes | Confirmed: taken | Confirmed: taken by PostgreSQL and MariaDB (from 10.3); MySQL's error 1093 unconfirmed |
-| The same in `INSERT … VALUES` | Confirmed: taken | Corrected: taken by MariaDB too, and PostgreSQL; MySQL's error 1093, which alone justifies the check for both MySQL profiles, unconfirmed |
-| `LIMIT` in an `IN` subquery | Confirmed: taken | Confirmed: PostgreSQL takes it, MariaDB refuses it |
-| `*` beside other items | Confirmed: taken | Confirmed: PostgreSQL takes both, MariaDB `*, a` but not `a, *`; if MySQL agrees, the check could refuse only the second |
-| Alias or column, in `WHERE` and `GROUP BY`, and in `HAVING` for a grouped column | Confirmed: the column | Confirmed: the column |
-| The same in `HAVING`, for a column not grouped | Confirmed they differ: SQLite reads the column, DuckDB the alias | Confirmed: PostgreSQL fails, MariaDB reads the alias |
-| The same inside `ORDER BY` expressions | Confirmed: the column | Confirmed for PostgreSQL, the column; corrected for MariaDB, the column too; MySQL's manual says MySQL reads the alias (unconfirmed) |
-| Constants in `ORDER BY` and `GROUP BY` | Confirmed: SQLite skips `'a'` and `1.5` but reads `-1` as a place, failing; DuckDB refuses `'a'` and `1.5`, and reads `-1` as a place too; both group everything by `'a'` | Confirmed for PostgreSQL, which refuses all three and `GROUP BY 'a'`; corrected for MariaDB, which skips `'a'` and `1.5` but refuses `-1` ("Unknown column '-1'"), so `-1` fails everywhere |
-| `SELECT DISTINCT` ordered by a column not selected | Confirmed: taken, in different orders | Confirmed: PostgreSQL refuses it, MariaDB takes it; MySQL 8.0 unconfirmed |
-| `ON` reading a table joined after it | Confirmed: SQLite takes it, DuckDB fails | Confirmed: both fail |
-| A column twice in `INSERT` or `SET` | Confirmed: SQLite takes both, DuckDB refuses both | Confirmed: PostgreSQL refuses both; MariaDB refuses `INSERT` and assigns `SET` left to right |
+| Rule | SQLite and DuckDB | PostgreSQL and MariaDB | MySQL 8.4 |
+| --- | --- | --- | --- |
+| Clauses without `FROM` (`WHERE`, `ORDER BY`, `LIMIT`) | Confirmed: taken | Confirmed: taken by PostgreSQL and MariaDB 11.8; MariaDB 10.6 unconfirmed | Pending CI (MySQL 8.4): taken |
+| A subquery reading the table an `UPDATE` or `DELETE` changes | Confirmed: taken | Confirmed: taken by PostgreSQL and MariaDB (from 10.3) | Pending CI (MySQL 8.4): error 1093 ("UPDATE reading its own table" and "DELETE reading its own table"), which the check for both MySQL profiles rests on |
+| The same in `INSERT … VALUES` | Confirmed: taken | Corrected: taken by MariaDB too, and PostgreSQL | Pending CI (MySQL 8.4): error 1093 ("INSERT VALUES reading its own table"), which alone justifies the check |
+| `LIMIT` in an `IN` subquery | Confirmed: taken | Confirmed: PostgreSQL takes it, MariaDB refuses it | Pending CI (MySQL 8.4): error 1235 ("LIMIT in an IN subquery"), which the check rests on, with MariaDB |
+| `*` beside other items | Confirmed: taken | Confirmed: PostgreSQL takes both, MariaDB `*, a` but not `a, *` | Pending CI (MySQL 8.4): `*, a` taken and `a, *` refused ("* before other items" and "* after other items"), as in MariaDB; if so, the check could refuse only the second |
+| Alias or column, in `WHERE` and `GROUP BY`, and in `HAVING` for a grouped column | Confirmed: the column | Confirmed: the column | Pending CI (MySQL 8.4): the column |
+| The same in `HAVING`, for a column not grouped | Confirmed they differ: SQLite reads the column, DuckDB the alias | Confirmed: PostgreSQL fails, MariaDB reads the alias | Pending CI (MySQL 8.4): the alias |
+| The same inside `ORDER BY` expressions | Confirmed: the column | Confirmed for PostgreSQL, the column; corrected for MariaDB, the column too | Pending CI (MySQL 8.4): the alias, as the manual says ("ORDER BY an expression of a column that's also an alias"), the only engine to read it; the alias checks refuse it everywhere anyway |
+| Constants in `ORDER BY` and `GROUP BY` | Confirmed: SQLite skips `'a'` and `1.5` but reads `-1` as a place, failing; DuckDB refuses `'a'` and `1.5`, and reads `-1` as a place too; both group everything by `'a'` | Confirmed for PostgreSQL, which refuses all three and `GROUP BY 'a'`; corrected for MariaDB, which skips `'a'` and `1.5` but refuses `-1` ("Unknown column '-1'"), so `-1` fails everywhere | Pending CI (MySQL 8.4): as MariaDB |
+| `SELECT DISTINCT` ordered by a column not selected | Confirmed: taken, in different orders | Confirmed: PostgreSQL refuses it, MariaDB takes it | Pending CI (MySQL 8.4): error 3065 ("SELECT DISTINCT ordered by a column not selected") |
+| `ON` reading a table joined after it | Confirmed: SQLite takes it, DuckDB fails | Confirmed: both fail | Pending CI (MySQL 8.4): fails |
+| A column twice in `INSERT` or `SET` | Confirmed: SQLite takes both, DuckDB refuses both | Confirmed: PostgreSQL refuses both; MariaDB refuses `INSERT` and assigns `SET` left to right | Pending CI (MySQL 8.4): as MariaDB |
+| A `SET` reading a column set before it | Confirmed: the old value | Pending CI: the old value in PostgreSQL, and the new in MariaDB, left to right ("SET reading a column set before it, read back") | Pending CI (MySQL 8.4): the new, which the `UPDATE … SET` trap rests on |
 
 ### Testing
 
@@ -760,8 +765,8 @@ Statement rules, from the [parser](#the-parser) and the
 - **The same query on every engine:** a corpus of common queries runs
   in `tests/engines/` against a fixture table with `NULL`s, negative
   numbers, mixed case, trailing spaces, and non-ASCII text, on SQLite
-  and DuckDB in the `py` job and PostgreSQL and MariaDB in the
-  `engines` job, and maybe a MySQL 8.4 service container. Results
+  and DuckDB in the `py` job and PostgreSQL, MariaDB, and MySQL 8.4 in
+  the `engines` job. Results
   are normalized (booleans to integers, decimals to floats) and must
   match across engines; documented differences are asserted to still
   differ, so the table above can't go stale. Built: the corpus in
@@ -801,7 +806,7 @@ Each chunk is one commit, tested on every backend:
    on PostgreSQL and MariaDB in CI, a MySQL service, and the statement
    rules' corpus. Cases written and confirmed on SQLite, DuckDB,
    PostgreSQL 18, and MariaDB 11.8 (2026-11-10), with four MariaDB
-   rows corrected; a MySQL service is left. See
+   rows corrected; a MySQL 8.4 service added, its rows pending CI. See
    [engine checks](#engine-checks).
 7. **Fuzzing** (small to medium): the generator and mutations.
 8. **Docs** (done, 2026-11-09): the README, the site, and the demos

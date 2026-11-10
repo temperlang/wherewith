@@ -4,7 +4,7 @@ everywhere, but where the design documents a difference, which is
 asserted to still differ.
 
 Each runner's engine names itself (`corpus_name`: sqlite, postgres,
-mariadb, or duckdb) and its column types; `roundtrip.run_all` calls
+mariadb, mysql, or duckdb) and its column types; `roundtrip.run_all` calls
 `check` for every engine setting. The fixture has `NULL`s, negative
 numbers, mixed case, a trailing space, and non-ASCII text, and is
 filled with a rendered common `INSERT`.
@@ -201,16 +201,16 @@ CASES = [
       rows=[(9, "9"), (2, "2"), (1, "1"), (1, "1")]),
     # Documented differences, each asserted to still differ.
     C("LIKE's case", "SELECT id FROM people WHERE name LIKE 'b%' ORDER BY id", rows=[],
-      sqlite=[(2,)], mariadb=[(2,)]),
-    C("collation", "SELECT id FROM people WHERE name = 'BOB'", rows=[], mariadb=[(2,)]),
+      sqlite=[(2,)], mariadb=[(2,)], mysql=[(2,)]),
+    C("collation", "SELECT id FROM people WHERE name = 'BOB'", rows=[], mariadb=[(2,)], mysql=[(2,)]),
     C("LOWER past ASCII", "SELECT lower(name) FROM people WHERE id = 4", rows=[("émile",)], sqlite=[("Émile",)]),
     C("float to integer", "SELECT CAST(ratio AS INTEGER) FROM people WHERE id = 1", rows=[(2,)], sqlite=[(1,)]),
     C("text that isn't a number", "SELECT CAST(nick AS INTEGER) FROM people WHERE id = 1", rows=ERROR,
-      sqlite=[(0,)], mariadb=[(0,)]),
+      sqlite=[(0,)], mariadb=[(0,)], mysql=[(0,)]),
     C("division by zero", "SELECT ratio / (score + 0.0) FROM people WHERE id = 4", rows=[(None,)],
       postgres=ERROR, duckdb=[(math.inf,)]),
     C("comparison results", "SELECT 1 < 2, TRUE", rows=Raw(("bool", "bool")),
-      sqlite=Raw(("int", "int")), mariadb=Raw(("int", "int"))),
+      sqlite=Raw(("int", "int")), mariadb=Raw(("int", "int")), mysql=Raw(("int", "int"))),
     C("decimal literals", "SELECT 1.5", rows=Raw(("Decimal",)), sqlite=Raw(("float",))),
     C("AVG of integers", "SELECT avg(score) FROM people", rows=Raw(("Decimal",)),
       sqlite=Raw(("float",)), duckdb=Raw(("float",))),
@@ -219,9 +219,11 @@ CASES = [
     C("NULLIF of values", "SELECT nullif(", H(1), ", ", H(2), ") AS n", rows=[(1,)],
       claim="decided 8: values cast where their type is unknown (NULLIF)"),
     C("collation and accents", "SELECT id FROM people WHERE name = 'emile'", rows=[], mariadb=[(4,)],
-      claim="rendering table, `'a' = 'A'`: MariaDB's default collation ignores accents too"),
+      mysql=[(4,)], claim="rendering table, `'a' = 'A'`: MariaDB's and MySQL's default collations ignore"
+                          " accents too"),
+    # MySQL's utf8mb4_0900_ai_ci is NO PAD, unlike MariaDB's default.
     C("collation and trailing spaces", "SELECT id FROM people WHERE name = 'carol'", rows=[], mariadb=[(3,)],
-      claim="rendering table, `'a' = 'A'`: MariaDB's default collation pads spaces"),
+      claim="rendering table, `'a' = 'A'`: MariaDB's default collation pads spaces, and MySQL's doesn't"),
     # Expression rules from the manuals, each refused (or allowed) by
     # the checks, run as the engines read them. Most are built
     # unchecked, since the checks refuse them.
@@ -248,7 +250,7 @@ CASES = [
       duckdb=[("2.0", "2.0", "0.6666666666666666")], unchecked=True,
       claim="expression checks: floats in `||` or cast to `TEXT` are written differently"),
     C("a boolean in ||", "SELECT name || flag FROM people WHERE id = 1", rows=[("alicetrue",)],
-      sqlite=[("alice1",)], mariadb=[("alice1",)], unchecked=True,
+      sqlite=[("alice1",)], mariadb=[("alice1",)], mysql=[("alice1",)], unchecked=True,
       claim="expression rule letters: a boolean in `||` is 1 in SQLite and MySQL, true in the others"),
     # PostgreSQL casts a boolean only to INTEGER (32 bits) and text.
     C("a boolean cast to INTEGER", "SELECT CAST(flag AS INTEGER) FROM people WHERE id = 1", rows=[(1,)],
@@ -256,12 +258,13 @@ CASES = [
     C("a boolean cast to DOUBLE", "SELECT CAST(flag AS DOUBLE) FROM people WHERE id = 1", rows=[(1.0,)],
       postgres=ERROR, unchecked=True, claim="expression checks: casts of booleans"),
     C("a boolean cast to TEXT", "SELECT CAST(flag AS TEXT) FROM people WHERE id = 1", rows=[("true",)],
-      sqlite=[("1",)], mariadb=[("1",)], unchecked=True, claim="expression checks: casts of booleans"),
+      sqlite=[("1",)], mariadb=[("1",)], mysql=[("1",)], unchecked=True,
+      claim="expression checks: casts of booleans"),
     C("an escape before an ordinary character", "SELECT 'ab' LIKE 'a!b' ESCAPE '!', 'a!b' LIKE 'a!b' ESCAPE '!'",
       rows=[(1, 0)], unchecked=True,
       claim="expression checks: an escape not before %, _, or itself (matches the character)"),
     C("an escape at the end", "SELECT 'a!' LIKE 'a!' ESCAPE '!', 'a' LIKE 'a!' ESCAPE '!'", rows=ERROR,
-      sqlite=[(0, 0)], mariadb=[(1, 0)], unchecked=True,
+      sqlite=[(0, 0)], mariadb=[(1, 0)], mysql=[(1, 0)], unchecked=True,
       claim="expression checks: an escape not before %, _, or itself (at the end)"),
     C("integer % by zero", "SELECT score % (id - 4) FROM people WHERE id = 4", rows=[(None,)], postgres=ERROR,
       duckdb=ERROR, claim="rendering table, `x / 0`: `%` by zero"),
@@ -280,12 +283,13 @@ CASES = [
       claim="expression checks: text in arithmetic (beside a float, read alike)"),
     # Statement rules from the manuals, the same way.
     C("LIMIT in an IN subquery", "SELECT id FROM people WHERE id IN (SELECT owner FROM pets ORDER BY owner"
-      " LIMIT 1)", rows=[(1,)], mariadb=ERROR, unchecked=True,
-      claim="statement checks: `LIMIT` in an `IN` subquery, which MySQL refuses"),
+      " LIMIT 1)", rows=[(1,)], mariadb=ERROR, mysql=ERROR, unchecked=True,
+      claim="statement checks: `LIMIT` in an `IN` subquery, which MySQL refuses (error 1235)"),
     C("* before other items", "SELECT *, owner FROM pets ORDER BY 1, 2 LIMIT 1", rows=[(1, "cat", 1)],
       unchecked=True, claim="statement checks: `*` beside other items (first, MySQL takes it)"),
     C("* after other items", "SELECT owner, * FROM pets ORDER BY 1, 3 LIMIT 1", rows=[(1, 1, "cat")],
-      mariadb=ERROR, unchecked=True, claim="statement checks: `*` beside other items, which MySQL refuses"),
+      mariadb=ERROR, mysql=ERROR, unchecked=True,
+      claim="statement checks: `*` beside other items, which MySQL refuses"),
     C("GROUP BY a column that's also an alias", "SELECT owner % 2 AS owner, count(*) AS n FROM pets"
       " GROUP BY owner ORDER BY 2, 1", rows=[(0, 1), (1, 1), (1, 2)], unchecked=True,
       claim="which of alias and column: GROUP BY reads the column"),
@@ -300,8 +304,10 @@ CASES = [
     C("WHERE a column that's also an alias", "SELECT id, -score AS score FROM people WHERE score > 0 ORDER BY 1",
       rows=[(1, -10), (5, -7)], unchecked=True, claim="which of alias and column: WHERE reads the column"),
     C("ORDER BY an expression of a column that's also an alias", "SELECT id, -score AS score FROM people"
-      " WHERE score IS NOT NULL ORDER BY score + 0", rows=[(2, 3), (4, 0), (5, -7), (1, -10)], unchecked=True,
-      claim="which of alias and column: inside ORDER BY expressions, the column (MariaDB too), but in MySQL"),
+      " WHERE score IS NOT NULL ORDER BY score + 0", rows=[(2, 3), (4, 0), (5, -7), (1, -10)],
+      mysql=[(1, -10), (5, -7), (4, 0), (2, 3)], unchecked=True,
+      claim="which of alias and column: inside ORDER BY expressions, the column (MariaDB too), but in MySQL"
+            " the alias"),
     C("ORDER BY a string", "SELECT id FROM people ORDER BY 'a', id", rows=[(1,), (2,), (3,), (4,), (5,)],
       postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
     C("ORDER BY a negative integer", "SELECT id FROM people ORDER BY -1, id", rows=ERROR, unchecked=True,
@@ -314,14 +320,15 @@ CASES = [
       unchecked=True, claim="statement checks: constants in GROUP BY"),
     # Which owner comes first is up to the engine where it's taken.
     C("SELECT DISTINCT ordered by a column not selected", "SELECT DISTINCT owner FROM pets ORDER BY kind",
-      rows=ACCEPTED, postgres=ERROR, unchecked=True,
-      claim="statement checks: SELECT DISTINCT ordered by something not selected"),
+      rows=ACCEPTED, postgres=ERROR, mysql=ERROR, unchecked=True,
+      claim="statement checks: SELECT DISTINCT ordered by something not selected (MySQL error 3065)"),
     C("ON reading a table joined after it", "SELECT count(*) FROM people AS p JOIN pets AS q"
       " ON q.owner = r.owner JOIN pets AS r ON r.owner = p.id", rows=ERROR, sqlite=[(5,)], unchecked=True,
       claim="statement checks: ON reading a table joined after it"),
     # What the output-name checks refuse, built unchecked.
     C("ORDER BY an alias beside a column of its name", "SELECT id, score AS id FROM people ORDER BY id",
-      rows=[(3, None), (2, -3), (4, 0), (5, 7), (1, 10)], unchecked=True, postgres=ERROR, mariadb=ERROR),
+      rows=[(3, None), (2, -3), (4, 0), (5, 7), (1, 10)], unchecked=True, postgres=ERROR, mariadb=ERROR,
+      mysql=ERROR),
     C("ORDER BY an expression's alias beside a column of its name", "SELECT id, score + 0 AS id FROM people ORDER BY id",
       rows=[(3, None), (2, -3), (4, 0), (5, 7), (1, 10)], unchecked=True, postgres=ERROR),
 ]
@@ -339,19 +346,29 @@ WRITTEN = [(1, "a!"), (11, "alice")]
 # Statement rules for writes, run after WRITES are read back.
 LATER = [
     C("UPDATE reading its own table", "UPDATE scratch SET v = 'u' WHERE id IN (SELECT id FROM scratch"
-      " WHERE id > 1)", rows=ACCEPTED, unchecked=True,
-      claim="statement checks: a subquery reading the table an UPDATE changes (MariaDB takes it from 10.3)"),
+      " WHERE id > 1)", rows=ACCEPTED, mysql=ERROR, unchecked=True,
+      claim="statement checks: a subquery reading the table an UPDATE changes (MariaDB takes it from 10.3;"
+            " MySQL error 1093)"),
     C("DELETE reading its own table", "DELETE FROM scratch WHERE id IN (SELECT id FROM scratch WHERE id > 100)",
-      rows=ACCEPTED, unchecked=True,
-      claim="statement checks: a subquery reading the table a DELETE changes (MariaDB takes it from 10.3)"),
+      rows=ACCEPTED, mysql=ERROR, unchecked=True,
+      claim="statement checks: a subquery reading the table a DELETE changes (MariaDB takes it from 10.3;"
+            " MySQL error 1093)"),
     C("INSERT VALUES reading its own table", "INSERT INTO scratch (id, v) VALUES ((SELECT count(*) FROM scratch),"
-      " 'x')", rows=ACCEPTED, unchecked=True,
+      " 'x')", rows=ACCEPTED, mysql=ERROR, unchecked=True,
       claim="statement checks: a subquery reading the table an INSERT ... VALUES changes (MariaDB takes it;"
             " MySQL error 1093)"),
     C("INSERT naming a column twice", "INSERT INTO scratch (id, id) VALUES (1, 2)", rows=ERROR,
       sqlite=ACCEPTED, unchecked=True, claim="statement checks: a column twice in INSERT"),
     C("SET naming a column twice", "UPDATE scratch SET v = 'a', v = 'b' WHERE id = 1", rows=ERROR,
-      sqlite=ACCEPTED, mariadb=ACCEPTED, unchecked=True, claim="statement checks: a column twice in SET"),
+      sqlite=ACCEPTED, mariadb=ACCEPTED, mysql=ACCEPTED, unchecked=True,
+      claim="statement checks: a column twice in SET"),
+    # Row 11 is (11, 'alice') from WRITES on every engine; only `v` may
+    # differ, which this sets.
+    C("SET reading a column set before it", "UPDATE scratch SET id = id + 1000, v = CAST(id AS TEXT)"
+      " WHERE id = 11", rows=ACCEPTED, unchecked=True, claim="the check stage: the `UPDATE … SET` trap"),
+    C("SET reading a column set before it, read back", "SELECT v FROM scratch WHERE id = 1011", rows=[("11",)],
+      mariadb=[("1011",)], mysql=[("1011",)],
+      claim="the check stage: the `UPDATE … SET` trap (MySQL and MariaDB assign left to right)"),
 ]
 
 # What the common parser refuses, as each engine reads it.
@@ -364,29 +381,32 @@ PROBES = [
       claim="the parser: clauses after the items without FROM"),
     P("LIMIT without FROM", "SELECT 1 AS x LIMIT 1", rows=[(1,)],
       claim="the parser: clauses after the items without FROM"),
-    P("TRIM with a second argument", "SELECT trim('xyxaxy', 'xy')", rows=[("a",)], mariadb=ERROR,
+    P("TRIM with a second argument", "SELECT trim('xyxaxy', 'xy')", rows=[("a",)], mariadb=ERROR, mysql=ERROR,
       claim="the parser: TRIM takes one argument (a set of characters to remove, but MySQL has no such form)"),
     P("TRIM ... FROM", "SELECT trim(BOTH 'xy' FROM 'xyxaxy')", rows=[("a",)], sqlite=ERROR,
-      mariadb=[("xa",)], claim="the parser: TRIM takes one argument (MySQL removes a whole string)"),
-    P("|| beside arithmetic", "SELECT 1 + 2 || 'a'", rows=[("3a",)], sqlite=[(3,)], mariadb=[(1,)],
+      mariadb=[("xa",)], mysql=[("xa",)],
+      claim="the parser: TRIM takes one argument (MySQL removes a whole string)"),
+    P("|| beside arithmetic", "SELECT 1 + 2 || 'a'", rows=[("3a",)], sqlite=[(3,)], mariadb=[(1,)], mysql=[(1,)],
       claim="the parser: `||` beside arithmetic needs parentheses (SQLite binds `||` tighter)"),
     # MySQL drops the backslash of an unknown escape, \x, in a string,
     # but keeps it before _ and %. Under NO_BACKSLASH_ESCAPES, MariaDB
     # still reads `\` as LIKE's escape (MySQL's manual says MySQL
     # doesn't), so `\` there is refused for that profile even alone.
     P("LIKE without ESCAPE, with a backslash", "SELECT 'a_b' LIKE 'a\\_b', 'a\\xb' LIKE 'a\\_b'", rows=[(0, 1)],
-      postgres=[(1, 0)], mariadb=[(1, 0)],
+      postgres=[(1, 0)], mariadb=[(1, 0)], mysql=[(1, 0)], mysql_nbe=[(0, 1)],
       claim="rendering table, `LIKE p`, no `ESCAPE`: `\\` escapes in PostgreSQL and MariaDB, under"
             " NO_BACKSLASH_ESCAPES too, and in MySQL but not under it"),
     # What the refusal asks for instead: an ESCAPE reads alike in every
     # mode, and a backslash in the pattern is then itself.
     P("LIKE with ESCAPE, with a backslash", "SELECT 'a\\b' LIKE 'a\\%' ESCAPE '!', 'a_b' LIKE 'a!_b' ESCAPE '!'",
-      rows=[(1, 1)], mariadb=SKIP, mariadb_nbe=[(1, 1)],
+      rows=[(1, 1)], mariadb=SKIP, mariadb_nbe=[(1, 1)], mysql=SKIP, mysql_nbe=[(1, 1)],
       claim="rendering table, `LIKE p`, no `ESCAPE`: with `ESCAPE`, `\\` is itself under NO_BACKSLASH_ESCAPES"),
     P("a subquery in FROM without an alias", "SELECT count(*) FROM (SELECT 1 AS x)", rows=[(1,)], mariadb=ERROR,
+      mysql=ERROR,
       claim="rendering table, subquery in `FROM`: an alias is required in MySQL, and in PostgreSQL before 16"),
     P("the default collation", "SELECT collation(name) FROM people WHERE id = 1", rows=SKIP,
-      mariadb=[("utf8mb4_uca1400_ai_ci",)], claim="rendering table, `'a' = 'A'`: MariaDB's default collation"),
+      mariadb=[("utf8mb4_uca1400_ai_ci",)], mysql=[("utf8mb4_0900_ai_ci",)],
+      claim="rendering table, `'a' = 'A'`: MariaDB's and MySQL's default collations"),
     P("the locale", "SELECT datcollate FROM pg_database WHERE datname = current_database()", rows=SKIP,
       postgres=[("en_US.utf8",)], claim="rendering table, `UPPER`, `LOWER`: the image's locale"),
 ]
@@ -494,8 +514,9 @@ def claimed(case) -> str:
 
 
 def setting(e) -> str:
-    """The engine's name, and for MariaDB under NO_BACKSLASH_ESCAPES,
-    `mariadb_nbe`, where a case can differ again."""
+    """The engine's name, and for MariaDB or MySQL under
+    NO_BACKSLASH_ESCAPES, `mariadb_nbe` or `mysql_nbe`, where a case can
+    differ again."""
     return e.corpus_name + ("_nbe" if getattr(e, "nbe", False) else "")
 
 

@@ -87,20 +87,21 @@ Python's standard library):
     uv run tests/engines/duckdb_roundtrip.py
     uv run tests/engines/postgres_roundtrip.py
     uv run tests/engines/mariadb_roundtrip.py
+    uv run tests/engines/mariadb_roundtrip.py --engine mysql
 
-SQLite and DuckDB are embedded, so those run anywhere. The PostgreSQL
-and MariaDB runners skip unless a server is reachable,
-at `127.0.0.1` on the usual port by default; each script's
-documentation lists the variables that change that. Each also runs the
+SQLite and DuckDB are embedded, so those run anywhere. The PostgreSQL,
+MariaDB, and MySQL runs skip unless a server is reachable, at
+`127.0.0.1` on the usual port by default (3307 for MySQL, as in CI);
+each script's documentation lists the variables that change that. Each also runs the
 common dialect's shared corpus (`common_corpus.py`): the same queries,
 rendered for that engine, giving the same rows, but where the design
 documents a difference, and random ones checked against SQLite.
 
 CI runs the tests on every backend for pull requests and pushes to
 `main`, using Temper's nightly `dev` build, and the round trips with
-Python 3.11: SQLite and DuckDB in the `py` job, and PostgreSQL and
-MariaDB as service containers in the `engines` job. Source files in
-`src/` are literate Markdown: `core.temper.md` has what every dialect
+Python 3.11: SQLite and DuckDB in the `py` job, and PostgreSQL,
+MariaDB, and MySQL as service containers in the `engines` job. Source
+files in `src/` are literate Markdown: `core.temper.md` has what every dialect
 shares, `query.temper.md` the query and its builder,
 and each database has its own file (`sqlite`, `postgres`, `mysql`, and
 `duckdb`) with its tag and template lexer, with tests beside them in

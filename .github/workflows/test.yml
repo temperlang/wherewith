@@ -88,11 +88,12 @@ jobs:
           UV_PYTHON: "3.11"
         run: uv run --locked tests/engines/duckdb_roundtrip.py
 
-  # Round trips through PostgreSQL and MariaDB, as service containers,
-  # with the Python library and the drivers in uv.lock (psycopg 3 and
-  # PyMySQL). The throwaway passwords are only for these containers.
+  # Round trips through PostgreSQL, MariaDB, and MySQL, as service
+  # containers, with the Python library and the drivers in uv.lock
+  # (psycopg 3 and PyMySQL). The throwaway passwords are only for these
+  # containers.
   engines:
-    name: round trips (PostgreSQL, MariaDB)
+    name: round trips (PostgreSQL, MariaDB, MySQL)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -117,6 +118,20 @@ jobs:
         # Data in memory, since the name checks make many tables.
         options: >-
           --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+          --tmpfs /var/lib/mysql
+      # MySQL's current LTS, on 3307 beside MariaDB. Its image sets up
+      # with networking off, so a ping over TCP answers only once the
+      # real server is up.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: wherewith
+          MYSQL_DATABASE: wherewith
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 5s --health-timeout 5s --health-retries 30
           --tmpfs /var/lib/mysql
     steps:
@@ -149,3 +164,9 @@ jobs:
       - name: MariaDB round trips
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: uv run --locked tests/engines/mariadb_roundtrip.py --require-server
+
+      # The MariaDB runner, with MySQL's expectations. Even if the
+      # others fail.
+      - name: MySQL round trips
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: uv run --locked tests/engines/mariadb_roundtrip.py --engine mysql --require-server

@@ -1,7 +1,7 @@
-"""Round-trip Wherewith's MySQL output through a real MariaDB server.
+"""Round-trip Wherewith's MySQL output through a real MariaDB or MySQL server.
 
     temper build -b py
-    uv run tests/engines/mariadb_roundtrip.py [--out temper.out/py] [-v]
+    uv run tests/engines/mariadb_roundtrip.py [--engine mysql] [--out temper.out/py] [-v]
 
 Uses PyMySQL and the Python library Temper generates in
 `temper.out/py`, with the checks in `roundtrip.py`, in four SQL modes:
@@ -22,16 +22,26 @@ design claims it's safe in all: under `NO_BACKSLASH_ESCAPES` each
 string must still end where Wherewith ends it, reading back with its
 escapes as plain text.
 
-The server comes from these variables, with defaults matching CI:
-WHEREWITH_MARIADB_HOST (127.0.0.1), WHEREWITH_MARIADB_PORT (3306),
-WHEREWITH_MARIADB_USER (root), WHEREWITH_MARIADB_PASSWORD (wherewith, a
-throwaway for the CI service container), and WHEREWITH_MARIADB_DATABASE
-(wherewith), which should be empty. With no server reachable, it skips,
-exiting 0, unless `--require-server` is given.
+MariaDB is the default; `--engine mysql` runs the same checks on MySQL,
+whose expectations in the shared corpus are keyed `mysql`, apart from
+MariaDB's `mariadb`. The server comes from these variables, with
+defaults matching CI: WHEREWITH_MARIADB_HOST (127.0.0.1),
+WHEREWITH_MARIADB_PORT (3306), WHEREWITH_MARIADB_USER (root),
+WHEREWITH_MARIADB_PASSWORD (wherewith, a throwaway for the CI service
+container), and WHEREWITH_MARIADB_DATABASE (wherewith), which should be
+empty; for MySQL, the same with WHEREWITH_MYSQL_, and port 3307. With no
+server reachable, it skips, exiting 0, unless `--require-server` is
+given.
+
+MySQL 8.4 authenticates with `caching_sha2_password`, whose first login
+sends the password in full. PyMySQL prefers TLS when the server offers
+it, as MySQL's image does with certificates it makes itself, so that
+works without the `cryptography` package that RSA would need.
 
 Exits 1, printing a minimal repro for each, if the engine disagrees.
 """
 
+import argparse
 import os
 import sys
 import time
@@ -41,20 +51,26 @@ from roundtrip import H, Style
 
 CHARSET = "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
 
+# For each engine: its name, and the port CI maps it to.
+ENGINES = {"mariadb": ("MariaDB", 3306), "mysql": ("MySQL", 3307)}
+
 
 class Mariadb(rt.Engine):
+    """MariaDB, or MySQL with `engine="mysql"`."""
+
     # MariaDB's DOUBLE has no NaN or infinities (PyMySQL refuses them),
     # and its documented range leaves out subnormals, so those aren't
     # bound; the sign of a zero isn't checked.
     exact_floats = False
     table_options = f" {CHARSET}"
-    corpus_name = "mariadb"
     corpus_types = {"int": "BIGINT", "text": "VARCHAR(100)", "float": "DOUBLE", "bool": "BOOLEAN"}
     # The server's default collation, which the corpus documents.
     corpus_options = " DEFAULT CHARSET=utf8mb4"
 
-    def __init__(self, conn, mode: str, extra: list[str], dialect) -> None:
+    def __init__(self, conn, mode: str, extra: list[str], dialect, engine: str = "mariadb") -> None:
         self.conn = conn
+        self.corpus_name = engine
+        self.product = ENGINES[engine][0]
         self.mode = mode
         self.nbe = "NO_BACKSLASH_ESCAPES" in extra
         self.dialect = dialect
@@ -77,7 +93,7 @@ class Mariadb(rt.Engine):
         import pymysql  # noqa: PLC0415
 
         version = self.execute("SELECT VERSION()")[0][0]
-        return (f"MariaDB {version}, PyMySQL {pymysql.VERSION_STRING}, Python {sys.version.split()[0]}, "
+        return (f"{self.product} {version}, PyMySQL {pymysql.VERSION_STRING}, Python {sys.version.split()[0]}, "
                 f"profile {self.dialect.name}, sql_mode {self.sql_mode or '(empty)'}")
 
     def execute(self, sql: str, params=()) -> list[tuple]:
@@ -273,17 +289,25 @@ class Mariadb(rt.Engine):
 
 
 def main() -> int:
-    parser = rt.arguments(__doc__, ("MariaDB", "WHEREWITH_MARIADB_HOST", "WHEREWITH_MARIADB_PORT", 3306))
+    # The engine picks the variables and port, so it's read first.
+    first = argparse.ArgumentParser(add_help=False)
+    first.add_argument("--engine", choices=sorted(ENGINES), default="mariadb")
+    engine = first.parse_known_args()[0].engine
+    name, port = ENGINES[engine]
+    var = f"WHEREWITH_{engine.upper()}_"
+    parser = rt.arguments(__doc__, (name, f"{var}HOST", f"{var}PORT", port))
+    parser.add_argument("--engine", choices=sorted(ENGINES), default="mariadb",
+                        help="the server's engine (default: mariadb)")
     args = parser.parse_args()
-    if (status := rt.start(args, "MariaDB")) is not None:
+    if (status := rt.start(args, name)) is not None:
         return status
     import pymysql  # noqa: PLC0415
 
     env = os.environ.get
     conn = pymysql.connect(
-        host=args.host, port=args.port, user=env("WHEREWITH_MARIADB_USER", "root"),
-        password=env("WHEREWITH_MARIADB_PASSWORD", "wherewith"),
-        database=env("WHEREWITH_MARIADB_DATABASE", "wherewith"),
+        host=args.host, port=args.port, user=env(f"{var}USER", "root"),
+        password=env(f"{var}PASSWORD", "wherewith"),
+        database=env(f"{var}DATABASE", "wherewith"),
         charset="utf8mb4", autocommit=True,
     )
     started = time.perf_counter()
@@ -298,11 +322,11 @@ def main() -> int:
         for extra in [[], nbe, aq, nbe + aq]:
             label = "+".join(extra) or "default"
             profile = ww.Dialect.mysql_no_backslash_escapes if extra[:1] == nbe else ww.Dialect.mysql
-            e = Mariadb(conn, default_mode, extra, profile)
+            e = Mariadb(conn, default_mode, extra, profile, engine)
             rt.run_all(e, args, f"{label}: ", strings)
             if profile is not ww.Dialect.mysql:
                 # The default profile must be safe here too.
-                e = Mariadb(conn, default_mode, extra, ww.Dialect.mysql)
+                e = Mariadb(conn, default_mode, extra, ww.Dialect.mysql, engine)
                 t = time.perf_counter()
                 before = len(rt.failures)
                 rt.check_strings(e, strings, "strings with the mysql profile")

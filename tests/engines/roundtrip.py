@@ -1,9 +1,9 @@
 """Shared code for the round trips through real engines in this directory.
 
 Each runner (`sqlite_roundtrip.py`, `postgres_roundtrip.py`,
-`mariadb_roundtrip.py`, and `duckdb_roundtrip.py`) describes its engine with an `Engine` subclass:
-how to run SQL, which inputs the engine can't take, and what it gives
-back. The checks here are the same for every engine:
+`mariadb_roundtrip.py`, which runs MySQL too, and `duckdb_roundtrip.py`)
+describes its engine with an `Engine` subclass: how to run SQL, which
+inputs the engine can't take, and what it gives back. The checks here are the same for every engine:
 
 1. Strings: `SELECT <quoteString(s)>` gives back exactly `s` (or, for an
    engine setting that reads a profile's escapes differently, what that
