@@ -2013,7 +2013,8 @@ text or fails when nothing there is typed; so a value gets a cast to
 its own type unless a peer that isn't a value gives it that type (one
 peer, or with `every`, each). A column, or anything PostgreSQL types
 from one, gives a value the column's type, so a value beside one isn't
-cast, keeping indexes usable. A value holding null takes any type it's
+cast, keeping indexes usable, except a float, whose type a column's
+may not be. A value holding null takes any type it's
 given, or else the first type among its peers, or `fallback`.
 
       private castType(e: CommonExpr, peers: List<CommonExpr>, every: Boolean, fallback: String): String {
@@ -2037,12 +2038,16 @@ given, or else the first type among its peers, or `fallback`.
       }
 
 `gives` says whether a peer gives a value the type `own` (any type,
-for null): a column, or the same type.
+for null): the same type, or a column, unless the value is a float,
+which an integer column would misread (`2.5` as a `BIGINT` fails).
+Other values a column reads as typed drivers send them, or fail with
+those drivers too, so they stay bare.
 
       private gives(peer: CommonExpr, own: String?): Boolean {
         if (peer is ValueExpr) { return false; }
         let type = pgType(peer);
-        type == "?" || (if (own != null) { type == own } else { !type.isEmpty })
+        if (type == "?") { return own != "DOUBLE PRECISION"; }
+        if (own != null) { type == own } else { !type.isEmpty }
       }
 
 `pgType` is the type PostgreSQL gives an expression: "?" for one typed

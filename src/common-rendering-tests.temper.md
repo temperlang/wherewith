@@ -422,6 +422,14 @@ literals, and otherwise bound as a new value, which PostgreSQL gets
 cast to its type. A float zero is bound as `0.0`. The negation of
 anything else stays, and so does the canonical form.
 
+    test("common rendering casts float values beside columns for PostgreSQL") {
+      let v = sql"SELECT a + ${0.5} AS p, a * ${2} AS q FROM t WHERE b < ${2.5} AND c IN (${1.0}, ${3}) AND d = ${"x"} AND e = ${true}";
+      assert(render(v, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT \"a\" + CAST($1 AS DOUBLE PRECISION) AS \"p\", \"a\" * $2 AS \"q\" FROM \"t\" WHERE \"b\" < CAST($3 AS DOUBLE PRECISION) AND \"c\" IN (CAST($4 AS DOUBLE PRECISION), $5) AND \"d\" = $6 AND \"e\" = $7");
+      assert(render(v, Dialect.sqlite, PlaceholderStyle.question) ==
+        "SELECT \"a\" + ? AS \"p\", \"a\" * ? AS \"q\" FROM \"t\" WHERE \"b\" < ? AND \"c\" IN (?, ?) AND \"d\" = ? AND \"e\" = ?");
+    }
+
     test("common rendering folds negated constants") {
       let found = renderMismatches([
         [

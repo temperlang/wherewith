@@ -68,7 +68,8 @@ alone as a `SELECT` item, and in comparisons, arithmetic, `IN` lists,
 `BETWEEN`, `CASE`, `COALESCE`, and `NULLIF`; and always after a sign,
 before `IS NULL`, as a simple `CASE`'s subject, and in `ABS`, `MIN`,
 `MAX`, `SUM`, `AVG`, and `COUNT`. A column beside it, or an expression
-of its type, types it instead, so it stays bare. Its `||` takes text
+of its type, types it instead, so it stays bare, except a float value
+beside a column, which an integer column would read as a `BIGINT`. Its `||` takes text
 on one side, so each value there is cast to `TEXT`, and so is the
 first operand when neither of the first two is text (`1 || 2` is
 `'12'` everywhere). Its `SUBSTR` takes only 32-bit integers, so a

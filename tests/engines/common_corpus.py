@@ -287,6 +287,18 @@ CASES = [
     C("values beside literals in COALESCE and NULLIF", "SELECT coalesce(", H(2.5), ", 0) AS a, nullif(",
       H(3000000000), ", 0) AS b", rows=[(2.5, 3000000000)],
       claim="decided 8: values cast where their type is unknown (beside literals)"),
+    # A column types a value beside it, but a float value is cast to its
+    # own type anyway, since an integer column would read one sent
+    # untyped as a BIGINT, failing on 2.5. Other values stay bare.
+    C("float values beside integer columns", "SELECT id FROM people WHERE score < ", H(2.5), " AND id BETWEEN ",
+      H(1.5), " AND ", H(4.5), " ORDER BY id", rows=[(2,), (4,)],
+      claim="decided 8: values cast where their type is unknown (a float beside an integer column)"),
+    C("float values beside an integer column in arithmetic and IN", "SELECT id + ", H(0.5), " FROM people"
+      " WHERE id IN (", H(1.0), ", ", H(2.5), ")", rows=[(1.5,)],
+      claim="decided 8: values cast where their type is unknown (a float beside an integer column)"),
+    C("integer values beside a float column", "SELECT id FROM people WHERE ratio > ", H(1), " AND ratio < ",
+      H(3), " ORDER BY id", rows=[(1,), (4,)],
+      claim="decided 8: values cast where their type is unknown (an integer beside a float column stays bare)"),
     # PostgreSQL's SUBSTR takes only 32-bit integers, so rendering casts
     # a start or length that isn't one, such as a BIGINT column.
     C("SUBSTR from a column and values", "SELECT substr(name, id), substr(name, ", H(2), ", ", H(3),
