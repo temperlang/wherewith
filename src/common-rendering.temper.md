@@ -76,6 +76,9 @@ first operand when neither of the first two is text (`1 || 2` is
 start or length that isn't one, such as a `BIGINT` column, is cast to
 `INTEGER`.
 
+A float value of zero binds as `0.0`, since SQLite stores `-0.0` as
+`0.0` and DuckDB keeps its sign.
+
 After writing, a database's SQL goes through that database's own
 lexer, as a `QueryBuilder` for it would check it, so a value can't land
 in a quote or comment; rendering refuses if it ever finds a problem.

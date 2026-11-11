@@ -357,6 +357,13 @@ each with its message and place.
         new Pair("SUBSTR(a, -1, 2)", new Pair("SUBSTR start below 1; databases differ", 11)),
         new Pair("SUBSTR(a, 1, -2)", new Pair("SUBSTR length below 0; databases differ", 14)),
         new Pair("SUBSTR(a, 1.5)", new Pair("a float in SUBSTR", 11)),
+        new Pair("SUBSTR(a, 1 - 2)", new Pair("SUBSTR start below 1; databases differ", 13)),
+        new Pair("SUBSTR(a, 1, 2 - 3)", new Pair("SUBSTR length below 0; databases differ", 16)),
+        new Pair("SUBSTR(a, 3000000000)", new Pair("SUBSTR start past 32 bits; PostgreSQL refuses it", 11)),
+        new Pair("SUBSTR(a, 1, 3000000000)", new Pair("SUBSTR length past 32 bits; PostgreSQL refuses it", 14)),
+        new Pair("a / (1.5 - 1.5)", new Pair("/ by zero; databases differ", 3)),
+        new Pair("a * 1.0 / (2 - 2)", new Pair("/ by zero; databases differ", 9)),
+        new Pair("a % (1 - 1)", new Pair("% by zero; databases differ", 3)),
         new Pair("SUM(COUNT(a))", new Pair("aggregate inside an aggregate", 5)),
       ];
       for (let r of refusals) {
@@ -466,6 +473,62 @@ text is: in a comparison, in an `IN` list, and after `WHEN` in a simple
       assert(expr"a = ${nick}" == at("= with a null value is never true; use IS NULL", 1, 3, "a = ${h}"));
     }
 
+## Values
+
+Every value is known when the query is built, so the checks read it
+as they read a literal: a zero divisor, a `SUBSTR` start or length, and
+a `LIKE` pattern's escapes. Floats must be finite, and not subnormal
+for MySQL; text can't hold NUL.
+
+    test("common expression values") {
+      let h = holeMark;
+      let nonFinite = "infinite or NaN float value; SQLite reads NaN as NULL, and MySQL takes neither; bind NULL instead";
+      assert(expr"a = ${NaN}" == at(nonFinite, 1, 5, "a = ${h}"));
+      assert(expr"a < ${Infinity}" == at(nonFinite, 1, 5, "a < ${h}"));
+      assert(expr"COALESCE(a, ${-Infinity})" == at(nonFinite, 1, 13, "COALESCE(a, ${h})"));
+      let subnormal = "subnormal float value, outside MySQL's DOUBLE range; bind 0.0 instead";
+      let tiny = 2.0e-310;
+      assert(expr"a = ${tiny}" == at(subnormal, 1, 5, "a = ${h}"));
+      assert(valued([Dialect.sqlite, Dialect.postgres, Dialect.duckdb], "SELECT a FROM t WHERE a = ", new SqlFloat(tiny)) ==
+        "SELECT a FROM t WHERE a = ?");
+      assert(valued([Dialect.mysql], "SELECT a FROM t WHERE a = ", new SqlFloat(tiny)) ==
+        at(subnormal, 1, 27, " a FROM t WHERE a = ${h}"));
+      assert(expr"a = ${2.2250738585072014e-308} AND b = ${0.0}" == "a = ? AND b = ?");
+      let withNul = "a${String.fromCodePoint(0) orelse panic()}b";
+      assert(expr"a = ${withNul}" ==
+        at("NUL in a text value; PostgreSQL refuses it, and SQLite's functions stop there; remove it", 1, 5, "a = ${h}"));
+      assert(expr"a / ${0.0}" == at("/ by zero; databases differ", 1, 3, "a / ${h}"));
+      assert(expr"a % ${0}" == at("% by zero; databases differ", 1, 3, "a % ${h}"));
+      assert(expr"a * 1.0 / (${2} - 2)" == at("/ by zero; databases differ", 1, 9, "a * 1.0 / (${h} - 2)"));
+      assert(expr"a / ${0.5}" == "a / ?");
+      assert(expr"SUBSTR(a, ${0})" == at("SUBSTR start below 1; databases differ", 1, 11, "SUBSTR(a, ${h})"));
+      assert(expr"SUBSTR(a, 1, ${-1})" == at("SUBSTR length below 0; databases differ", 1, 14, "SUBSTR(a, 1, ${h})"));
+      assert(expr"SUBSTR(a, ${3000000000i64})" ==
+        at("SUBSTR start past 32 bits; PostgreSQL refuses it", 1, 11, "SUBSTR(a, ${h})"));
+      assert(valued([Dialect.sqlite, Dialect.duckdb], "SELECT SUBSTR(a, ", new SqlInt(-2i64), ") FROM t") ==
+        "SELECT SUBSTR(a, ?) FROM t");
+      assert(valued([Dialect.sqlite, Dialect.mysql, Dialect.duckdb], "SELECT SUBSTR(a, ", new SqlInt(3000000000i64), ") FROM t") ==
+        "SELECT SUBSTR(a, ?) FROM t");
+      assert(expr"SUBSTR(a, ${2}, ${2147483647})" == "SUBSTR(a, ?, ?)");
+      assert(expr"a LIKE ${"x!"} ESCAPE '!'" ==
+        at("escape character not before %, _, or itself", 1, 8, "a LIKE ${h} ESCAPE '!'"));
+      assert(expr"a LIKE ${"!a%"} ESCAPE '!'" ==
+        at("escape character not before %, _, or itself", 1, 8, "a LIKE ${h} ESCAPE '!'"));
+      assert(expr"a LIKE ${"x!%!!%"} ESCAPE '!'" == "a LIKE ? ESCAPE '!'");
+    }
+
+`valued` builds a common query from text, a value, and more text, for
+targets, and gives it rendered canonically, or the problem.
+
+    let valued(targets: List<Dialect>, before: String, value: SqlValue, after: String = ""): String {
+      let b = new QueryBuilder(Dialect.common);
+      b.targets = targets;
+      b.appendSafe(before);
+      b.appendValue(value);
+      b.appendSafe(after);
+      built(b)
+    }
+
 ## Constants
 
 Arithmetic on constants is refused where its result overflows a 64-bit
@@ -490,6 +553,9 @@ operator that overflows. Rendering's folding is in the
       assert(expr"-CAST(${min} AS INTEGER)" == at(over, 1, 1, "-CAST(${h} AS INTEGE"));
       assert(expr"${1.0e308} * 10" == at(infinite, 1, 6, "${h} * 10"));
       assert(expr"-(${1.0e308} + ${1.0e308})" == at(infinite, 1, 8, "-(${h} + ${h})"));
+      // Decimals count, as floats, beside a float.
+      assert(expr"${1.0e308} * 10.0" == at(infinite, 1, 6, "${h} * 10.0"));
+      assert(expr"${1.0e308} / ${1.0e-10}" == at(infinite, 1, 6, "${h} / ${h}"));
       // Up to the limits, and anything with a column, pass.
       assert(expr"-${max}" == "-?");
       assert(expr"-(${min} + 1)" == "-(? + 1)");

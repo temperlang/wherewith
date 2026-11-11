@@ -174,6 +174,9 @@ what every language prints. The site shows the lines between each
       refused("SELECT 'a' || 1 + 2 AS x");
       // Some databases turn 0 into text, and others refuse it.
       refused("SELECT CASE WHEN a > 1 THEN 'x' ELSE 0 END AS c FROM t");
+      // Databases name a + 1 differently (a+1, ?column?, or (a + 1)), so
+      // an expression in a FROM subquery needs an alias.
+      refused("SELECT * FROM (SELECT a + 1 FROM t) AS s");
       // A placeholder in the text would shift every value's place.
       refused("SELECT a FROM t WHERE id = ?");
       // What isn't in the common dialect yet is refused too.
@@ -227,7 +230,7 @@ what every language prints. The site shows the lines between each
       let created = Identifier.named("created") orelse panic();
       say(search(null, null, created, false, 0));
       say(search("Launch", null, created, false, 0));
-      say(search(null, 100, Identifier.named("Total") orelse panic(), true, 2));
+      say(search(null, 100, Identifier.named("total") orelse panic(), true, 2));
 
       // A query for fewer databases relaxes the checks for the others:
       // MySQL reads \ in a string as an escape, so it's refused only while
@@ -348,6 +351,7 @@ The same as `demos/tour/expected.txt`.
       "SELECT a, count(*) AS n FROM t GROUP BY b: a is neither grouped nor aggregated; databases differ, at line 1, column 8: SELECT a, count(*) AS n FRO
       "SELECT 'a' || 1 + 2 AS x: arithmetic beside || needs parentheses; databases group them differently, at line 1, column 17: SELECT 'a' || 1 + 2 AS x
       "SELECT CASE WHEN a > 1 THEN 'x' ELSE 0 END AS c FROM t: CASE mixes text and a number, at line 1, column 38: a > 1 THEN 'x' ELSE 0 END AS c FROM t
+      "SELECT * FROM (SELECT a + 1 FROM t) AS s: an expression in a FROM subquery needs an alias; databases name it differently, at line 1, column 23: LECT * FROM (SELECT a + 1 FROM t) AS s
       "SELECT a FROM t WHERE id = ?: ? outside quotes; put values in holes, at line 1, column 28: a FROM t WHERE id = ?
       "SELECT 1 AS a UNION SELECT 2: UNION isn't in the common dialect yet, at line 1, column 15: SELECT 1 AS a UNION SELECT 2
       "SELECT 7 / 2.0 AS x: built
@@ -383,7 +387,7 @@ The same as `demos/tour/expected.txt`.
       "## 6. Building queries in code
       "SELECT "id", "title" FROM "orders" ORDER BY "created" NULLS FIRST LIMIT $1 OFFSET $2
       "SELECT "id", "title" FROM "orders" WHERE "title" LIKE (CAST($1 AS TEXT) || '%') ESCAPE '!' ORDER BY "created" NULLS FIRST LIMIT $2 OFFSET $3
-      "SELECT "id", "title" FROM "orders" WHERE "total" >= $1 ORDER BY "Total" DESC NULLS LAST LIMIT $2 OFFSET $3
+      "SELECT "id", "title" FROM "orders" WHERE "total" >= $1 ORDER BY "total" DESC NULLS LAST LIMIT $2 OFFSET $3
       "for postgres and sqlite: SELECT 'C:\\temp' AS "p"
       "for mysql: common query checked for postgres, sqlite, not mysql
       "

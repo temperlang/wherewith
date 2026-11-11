@@ -123,6 +123,9 @@ refused("SELECT a, count(*) AS n FROM t GROUP BY b")
 refused("SELECT 'a' || 1 + 2 AS x")
 -- Some databases turn 0 into text, and others refuse it.
 refused("SELECT CASE WHEN a > 1 THEN 'x' ELSE 0 END AS c FROM t")
+-- Databases name a + 1 differently (a+1, ?column?, or (a + 1)), so
+-- an expression in a FROM subquery needs an alias.
+refused("SELECT * FROM (SELECT a + 1 FROM t) AS s")
 -- A placeholder in the text would shift every value's place.
 refused("SELECT a FROM t WHERE id = ?")
 -- What isn't in the common dialect yet is refused too.
@@ -211,7 +214,7 @@ end
 
 print(search({}))
 print(search({ word = "Launch" }))
-print(search({ minTotal = 100, sort = Identifier.named("Total"), descending = true, page = 2 }))
+print(search({ minTotal = 100, sort = Identifier.named("total"), descending = true, page = 2 }))
 
 -- A query for fewer databases relaxes the checks for the others: MySQL
 -- reads \ in a string as an escape, so it's refused only while MySQL is

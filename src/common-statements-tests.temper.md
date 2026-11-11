@@ -299,6 +299,66 @@ every database reads them alike, and `DISTINCT` with the items in
       }
     }
 
+## The rest of the check stage
+
+Places in `GROUP BY` and `ORDER BY`, the names a subquery in `FROM`
+gives its columns, subqueries that give one value, `INSERT`'s column
+count, and names written in two cases.
+
+    test("common statement check stage") {
+      let nameTwice = "names two columns of a FROM subquery; MySQL refuses it, and others rename one; give each its own alias";
+      let found = mismatches([
+        new Pair("SELECT a FROM t ORDER BY 0", new Pair("ORDER BY 0 isn't an item's place; the SELECT has 1 item", 26)),
+        new Pair("SELECT a, b FROM t ORDER BY 1, 3", new Pair("ORDER BY 3 isn't an item's place; the SELECT has 2 items", 32)),
+        new Pair("SELECT a FROM t GROUP BY 2", new Pair("GROUP BY 2 isn't an item's place; the SELECT has 1 item", 26)),
+        new Pair("SELECT a, count(*) FROM t GROUP BY 1, 2", new Pair("GROUP BY 2 is an aggregate's place; group by columns", 39)),
+        new Pair(
+          "SELECT *, a FROM t ORDER BY 2 NULLS LAST",
+          new Pair("NULLS on a place at or after a * in ORDER BY; MySQL needs the column to sort its NULLs, so name it", 29),
+        ),
+        new Pair(
+          "SELECT * FROM (SELECT a + 1 FROM t) AS s",
+          new Pair("an expression in a FROM subquery needs an alias; databases name it differently", 23),
+        ),
+        new Pair("SELECT s.x FROM (SELECT a AS x, b AS \"X\" FROM t) AS s", new Pair("\"X\" ${nameTwice}", 38)),
+        new Pair("SELECT * FROM (SELECT t.a, u.a FROM t JOIN u ON TRUE) AS s", new Pair("a ${nameTwice}", 28)),
+        new Pair("SELECT a FROM t WHERE (SELECT a, b FROM u) = 1", new Pair("a subquery here gives one column, not 2", 34)),
+        new Pair("SELECT a FROM t WHERE a IN (SELECT a, b, c FROM u)", new Pair("a subquery here gives one column, not 3", 39)),
+        new Pair("INSERT INTO t (a, b) SELECT a FROM u", new Pair("INSERT lists 2 columns, but its query gives 1", 22)),
+        new Pair(
+          "SELECT \"A\" FROM t WHERE a > 1",
+          new Pair("\"A\" and a differ only in case, which databases read differently for names; write them alike", 25),
+        ),
+        new Pair(
+          "SELECT t.a FROM \"T\"",
+          new Pair("t and \"T\" differ only in case, which databases read differently for table names; write them alike", 17),
+        ),
+      ], commonTargets());
+      assert(found == "") { found }
+      let passes = [
+        "SELECT *, a FROM t ORDER BY 5",
+        "SELECT *, a FROM t ORDER BY 2 DESC NULLS LAST",
+        "SELECT a, *, b FROM t ORDER BY 1 NULLS LAST",
+        "SELECT s.x, s.a FROM (SELECT a + 1 AS x, a, t.* FROM t) AS s",
+        "SELECT a FROM t WHERE EXISTS (SELECT a, b FROM u) AND a IN (SELECT * FROM u)",
+        "INSERT INTO t (a, b) SELECT * FROM u",
+        "SELECT users FROM \"Users\" WHERE \"Users\".users > 1",
+      ];
+      for (let text of passes) {
+        let got = narrowed(notMysql(), text);
+        assert(got == parsed(text, false)) { "${text}: ${got}" }
+      }
+      // Names in two cases are one name but for PostgreSQL, and MySQL's
+      // tables, so leaving those out relaxes the check.
+      let cased = "SELECT \"A\" FROM t WHERE a > 1";
+      assert(narrowed([Dialect.sqlite, Dialect.mysql, Dialect.duckdb], cased) == cased);
+      assert(narrowed([Dialect.postgres], cased) == cased);
+      let tables = "SELECT t.a FROM \"T\"";
+      assert(narrowed([Dialect.sqlite, Dialect.duckdb], tables) == tables);
+      assert(narrowed([Dialect.mysql], tables) ==
+        at("t and \"T\" differ only in case, which databases read differently for table names; write them alike", 1, 17, tables));
+    }
+
 ## Output names
 
 A bare name alone in `ORDER BY` that PostgreSQL or MySQL would read
@@ -413,7 +473,10 @@ target. Leave both out, and they pass.
       let found = "${mismatches(mysqlOnly, commonTargets())}${mismatches(mysqlOnly, [Dialect.mysqlNoBackslashEscapes])}";
       assert(found == "") { found }
       for (let r of mysqlOnly) {
-        assert(narrowed(notMysql(), r.key) == parsed(r.key, false)) { r.key }
+        // "A" and a are one column but for PostgreSQL, which the case
+        // check refuses beside the others.
+        let targets = if (hasAt(r.key, String.begin, "UPDATE t SET \"A\"")) { [Dialect.sqlite, Dialect.duckdb] } else { notMysql() };
+        assert(narrowed(targets, r.key) == parsed(r.key, false)) { r.key }
       }
       assert(canon("SELECT a FROM t WHERE EXISTS (SELECT b FROM u LIMIT 1)") ==
         "SELECT a FROM t WHERE EXISTS (SELECT b FROM u LIMIT 1)");

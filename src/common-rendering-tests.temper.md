@@ -208,10 +208,16 @@ the unwritten order), casts, and `LENGTH`.
         ],
       ]);
       assert(found == "") { found }
-      // MySQL can't sort by IS NULL of a * column's place.
-      let star = checkedQuery(commonTargets(), "SELECT * FROM t ORDER BY 1 NULLS LAST");
+      // MySQL can't sort by IS NULL of a * column's place, so the checks
+      // refuse it there, and rendering does too, for a query made
+      // unchecked.
+      let starred = "SELECT * FROM t ORDER BY 1 NULLS LAST";
+      let starNulls = "NULLS on a place at or after a * in ORDER BY; MySQL needs the column to sort its NULLs, so name it";
+      assert(canon(starred) == placed(starred, starNulls, 26));
+      let star = checkedQuery(notMysql(), starred);
       assert(render(star, Dialect.sqlite, PlaceholderStyle.question) == "SELECT * FROM \"t\" ORDER BY 1 NULLS LAST");
-      assert(star.renderProblem(Dialect.mysql, PlaceholderStyle.question) ==
+      let raw = Query.unchecked(Dialect.common, [textPart(starred)]);
+      assert(raw.renderProblem(Dialect.mysql, PlaceholderStyle.question) ==
         "NULLS FIRST or LAST on the place of a * in ORDER BY, for mysql");
     }
 
@@ -343,6 +349,14 @@ results or `COALESCE` arguments that are all values, strings, or
       // A minus before a value gets its space.
       assert(render(sql"SELECT a -${-1} AS n FROM t", Dialect.mysql, PlaceholderStyle.percentS) ==
         "SELECT `a` - %s AS `n` FROM `t`");
+      // A float zero binds as 0.0, since SQLite stores -0.0 as 0.0 and
+      // DuckDB keeps it.
+      let zero = -0.0;
+      let zeros = sql"SELECT a FROM t WHERE b = ${zero} OR c = ${-1.5}";
+      for (let d of databases()) {
+        let z = zeros.render(d, PlaceholderStyle.question) orelse panic();
+        assert(paramText(z.params[0]) == "float:0.0" && paramText(z.params[1]) == "float:-1.5") { d.name }
+      }
       // Names from holes are quoted the database's way.
       let t = named("My Table");
       assert(render(sql"SELECT a FROM ${t}", Dialect.mysql, PlaceholderStyle.question) == "SELECT `a` FROM `My Table`");

@@ -3,13 +3,14 @@
 The common dialect is SQL written once for every database Wherewith
 knows: a strict subset that each one reads the same way. The
 [design](../docs/design.md#the-common-dialect) has the whole plan.
-Built so far: the `sql` tag, `Dialect.common`, the lexer, which reads
+Built: the `sql` tag, `Dialect.common`, the lexer, which reads
 a template into tokens and refuses anything outside the subset, with
 the line and column of the problem, the parser for
 [expressions](common-expressions.temper.md) and
 [statements](common-statements.temper.md), with the checks they show,
 and [rendering](common-rendering.temper.md) for each database. The
-rest of the check stage comes next.
+checks run when a query is built, for each of its targets, so a query
+that builds renders for every one of them.
 
 ## Profile
 

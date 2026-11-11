@@ -403,8 +403,32 @@ CASES = [
             " ignores it)"),
     C("ORDER BY a decimal", "SELECT id FROM people ORDER BY 1.5, id", rows=[(1,), (2,), (3,), (4,), (5,)],
       postgres=ERROR, duckdb=ERROR, unchecked=True, claim="statement checks: constants in ORDER BY"),
-    C("ORDER BY a place past the items", "SELECT id FROM people ORDER BY 2", rows=ERROR,
-      claim="statement checks: constants in ORDER BY (a place past the items fails everywhere)"),
+    C("ORDER BY a place past the items", "SELECT id FROM people ORDER BY 2", rows=ERROR, unchecked=True,
+      claim="the check stage: places in ORDER BY (a place past the items fails everywhere)"),
+    C("GROUP BY an aggregate's place", "SELECT count(*) FROM pets GROUP BY 1", rows=ERROR, unchecked=True,
+      claim="the check stage: places in GROUP BY (an aggregate's place fails everywhere)"),
+    C("a subquery giving two columns", "SELECT id FROM people WHERE id IN (SELECT owner, kind FROM pets)",
+      rows=ERROR, unchecked=True, claim="the check stage: a subquery that gives one value has one column"),
+    # The pass that writes x IS NULL first, under DISTINCT.
+    C("SELECT DISTINCT with NULLS LAST", "SELECT DISTINCT score FROM people ORDER BY score NULLS LAST",
+      rows=[(-3,), (0,), (7,), (10,), (None,)], claim="rendering table, `x NULLS LAST`, with DISTINCT"),
+    C("a name twice in a FROM subquery", "SELECT * FROM (SELECT id AS x, score AS x FROM people WHERE id = 1)"
+      " AS s", rows=[(1, 10)], mariadb=ERROR, mysql=ERROR, unchecked=True,
+      claim="the check stage: a name twice in a FROM subquery (MySQL refuses it)"),
+    # A quoted "ID" is the column id but in PostgreSQL; table names
+    # also follow MySQL's lower_case_table_names, 0 on Linux.
+    C("a column name in another case", "SELECT \"ID\" FROM people WHERE id = 1", rows=[(1,)], postgres=ERROR,
+      unchecked=True, claim="the check stage: names in two cases (PostgreSQL reads two columns)"),
+    C("a table name in another case", "SELECT count(*) FROM \"PEOPLE\"", rows=[(5,)], postgres=ERROR,
+      mariadb=ERROR, mysql=ERROR, unchecked=True,
+      claim="the check stage: names in two cases (PostgreSQL and MySQL on Linux read two tables)"),
+    # SQLite's functions stop at a NUL, and PostgreSQL's text can't
+    # hold one.
+    C("NUL in a text value", "SELECT length(", H("a\0b"), ")", rows=[(3,)], sqlite=[(1,)], postgres=ERROR,
+      unchecked=True, claim="the check stage: NUL in a text value"),
+    # SQLite would store -0.0 as 0.0 and DuckDB keep it; it binds as 0.0.
+    C("a float zero value", "SELECT ", H(-0.0), " AS z", rows=Exact([(0.0,)]),
+      claim="the check stage: a float zero binds as 0.0"),
     C("GROUP BY a string", "SELECT count(*) FROM pets GROUP BY 'a'", rows=[(4,)], postgres=ERROR,
       unchecked=True, claim="statement checks: constants in GROUP BY"),
     # Which owner comes first is up to the engine where it's taken.
@@ -510,9 +534,23 @@ PROBES = [
 
 
 def unchecked_common(*pieces):
-    """A common query from text, without the checks."""
+    """A common query from text and values, without the checks."""
     ww = rt.ww
-    return ww.Query.unchecked(ww.Dialect.common, [ww.QueryText(p) for p in pieces])
+    return ww.Query.unchecked(ww.Dialect.common, [
+        ww.QueryText(p) if isinstance(p, str) else ww.QueryParam(sql_value(p.v)) for p in pieces])
+
+
+def sql_value(v):
+    ww = rt.ww
+    if v is None:
+        return ww.SqlNull()
+    if isinstance(v, bool):
+        return ww.SqlBool(v)
+    if isinstance(v, int):
+        return ww.SqlInt(v)
+    if isinstance(v, float):
+        return ww.SqlFloat(v)
+    return ww.SqlText(v)
 
 
 def common(*pieces, targets=None):

@@ -23,6 +23,7 @@ SELECT Name FROM t: bare name not lowercase; quote it to keep its case, at line 
 SELECT a, count(*) AS n FROM t GROUP BY b: a is neither grouped nor aggregated; databases differ, at line 1, column 8: SELECT a, count(*) AS n FRO
 SELECT 'a' || 1 + 2 AS x: arithmetic beside || needs parentheses; databases group them differently, at line 1, column 17: SELECT 'a' || 1 + 2 AS x
 SELECT CASE WHEN a > 1 THEN 'x' ELSE 0 END AS c FROM t: CASE mixes text and a number, at line 1, column 38: a > 1 THEN 'x' ELSE 0 END AS c FROM t
+SELECT * FROM (SELECT a + 1 FROM t) AS s: an expression in a FROM subquery needs an alias; databases name it differently, at line 1, column 23: LECT * FROM (SELECT a + 1 FROM t) AS s
 SELECT a FROM t WHERE id = ?: ? outside quotes; put values in holes, at line 1, column 28: a FROM t WHERE id = ?
 SELECT 1 AS a UNION SELECT 2: UNION isn't in the common dialect yet, at line 1, column 15: SELECT 1 AS a UNION SELECT 2
 SELECT 7 / 2.0 AS x: built
@@ -58,7 +59,7 @@ with LIMIT inside: LIMIT in an IN subquery; MySQL refuses it, at line 1, column 
 ## 6. Building queries in code
 SELECT "id", "title" FROM "orders" ORDER BY "created" NULLS FIRST LIMIT $1 OFFSET $2
 SELECT "id", "title" FROM "orders" WHERE "title" LIKE (CAST($1 AS TEXT) || '%') ESCAPE '!' ORDER BY "created" NULLS FIRST LIMIT $2 OFFSET $3
-SELECT "id", "title" FROM "orders" WHERE "total" >= $1 ORDER BY "Total" DESC NULLS LAST LIMIT $2 OFFSET $3
+SELECT "id", "title" FROM "orders" WHERE "total" >= $1 ORDER BY "total" DESC NULLS LAST LIMIT $2 OFFSET $3
 for postgres and sqlite: SELECT 'C:\temp' AS "p"
 for mysql: common query checked for postgres, sqlite, not mysql
 

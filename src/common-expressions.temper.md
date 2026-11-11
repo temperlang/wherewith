@@ -907,12 +907,19 @@ unknown for columns and nested queries. The checker refuses:
 - **Division:** `/` without a float operand (a float value, a decimal,
   `AVG`, or a `CAST` to `DOUBLE`, or arithmetic on one), since SQLite
   and PostgreSQL divide integers to an integer; `%` with a float,
-  which SQLite truncates; and `/` or `%` by a literal zero, which
-  gives `NULL`, an error, infinity, or NaN.
+  which SQLite truncates; and `/` or `%` by a constant zero (a
+  literal, a value, or arithmetic on them), which gives `NULL`, an
+  error, infinity, or NaN.
 - **Constant arithmetic** past a 64-bit integer or a finite float,
-  such as `-${v}` with the smallest integer, or `${v} + 1` with the
-  largest: SQLite turns to a float, DuckDB, MySQL, and MariaDB widen
-  a negation, and the others fail; see [constants](#constants).
+  such as `-${v}` with the smallest integer, `${v} + 1` with the
+  largest, or `${v} * 10.0` with a float near the largest: SQLite
+  turns to a float or infinity, DuckDB, MySQL, and MariaDB widen a
+  negation, and the others fail; see [constants](#constants).
+- **Values** that can't mean the same everywhere: a float that's
+  infinite or NaN (SQLite reads NaN as `NULL`, and MySQL takes
+  neither), or subnormal, with a MySQL profile a target (outside the
+  range its manual gives `DOUBLE`); and text with NUL (PostgreSQL
+  refuses it, and SQLite's functions stop there) or lone surrogates.
 - **Floats written as text:** a float in `||` or cast to `TEXT`, which
   the databases write differently (`1.0` or `1`, say), and a float cast
   to `INTEGER`, which SQLite truncates and the others round.
@@ -927,10 +934,11 @@ unknown for columns and nested queries. The checker refuses:
   since PostgreSQL, MySQL, and MariaDB read `\` in it as an escape,
   SQLite and DuckDB don't, and under `NO_BACKSLASH_ESCAPES` MariaDB
   still does (checked) but MySQL doesn't (by its manual); with it, one
-  character other than `'`, `%`, or `_`, and in a literal pattern,
-  only before `%`, `_`, or itself.
-- **`SUBSTR`** with a literal start below 1 or a negative length, and a
-  float for either.
+  character other than `'`, `%`, or `_`, and in a pattern that's a
+  literal or a value, only before `%`, `_`, or itself.
+- **`SUBSTR`** with a constant start below 1 or a negative length, a
+  float for either, and, with PostgreSQL a target, a constant past 32
+  bits, which its `SUBSTR` refuses.
 - **An aggregate inside an aggregate.**
 
 Narrower [targets](query.temper.md#querybuilder) relax the checks that
@@ -951,12 +959,20 @@ everywhere, but for the two MySQL profiles; the rest:
 | A boolean in `\|\|` | `abaab` | `1` in SQLite and MySQL, `true` in the others |
 | `LIKE` without `ESCAPE`, on a value or a `\` | `abb?a` | `\` escapes in PostgreSQL, MySQL, and MariaDB, but not in SQLite and DuckDB; under `NO_BACKSLASH_ESCAPES`, MariaDB's still does and MySQL's doesn't |
 | `SUBSTR` start below 1 or length below 0 | `abcca` | SQLite and DuckDB agree |
+| A subnormal float value | `aa??a` | Outside the range MySQL's manual gives `DOUBLE` |
 
     let ruleKinds = "abccd";
     let ruleDivision = "aabbc";
     let ruleBooleanText = "abaab";
     let ruleLikeEscape = "abb?a";
     let ruleSubstr = "abcca";
+    let ruleSubnormal = "aa??a";
+
+The smallest normal float, and the 32-bit integers' bounds.
+
+    let smallestNormal = 2.2250738585072014e-308;
+    let minInt32 = -2147483648i64;
+    let maxInt32 = 2147483647i64;
 
 The kinds:
 
@@ -1001,10 +1017,10 @@ need.
               kindBoolean
             }
           };
-          is ValueExpr -> valueKind(e.hole);
-          is SubqueryExpr -> new StatementChecker(this).subquery(e.query);
+          is ValueExpr -> value(e);
+          is SubqueryExpr -> new StatementChecker(this).single(e.query);
           is ExistsExpr -> do {
-            check(e.query);
+            new StatementChecker(this).subquery(e.query.query);
             kindBoolean
           };
           is UnaryExpr -> do {
@@ -1053,6 +1069,36 @@ need.
           is CallExpr -> call(e);
           else -> kindUnknown;
         }
+      }
+
+`value` checks a value hole's value, and gives its kind: a float must
+be finite (SQLite reads NaN as `NULL`, and MySQL takes neither NaN nor
+the infinities), and, with a MySQL profile a target, not subnormal,
+since MySQL's `DOUBLE` leaves those out of its range; text can't hold
+NUL (PostgreSQL refuses it, and SQLite's functions stop there) or lone
+surrogates, which have no UTF-8 form.
+
+      private value(e: ValueExpr): Int throws Bubble {
+        let v = holeValue(e.hole);
+        if (v is SqlFloat) {
+          let x = v.value;
+          if (x - x != 0.0) {
+            fail("infinite or NaN float value; SQLite reads NaN as NULL, and MySQL takes neither; bind NULL instead", e.at);
+          }
+          if (!isFloatZero(x) && x < smallestNormal && x > -smallestNormal && varies(ruleSubnormal)) {
+            fail("subnormal float value, outside MySQL's DOUBLE range; bind 0.0 instead", e.at);
+          }
+        } else if (v is SqlText) {
+          let text = v.value;
+          for (var i = String.begin; text.hasIndex(i); i = text.next(i)) {
+            let c = text[i];
+            if (c == 0) {
+              fail("NUL in a text value; PostgreSQL refuses it, and SQLite's functions stop there; remove it", e.at);
+            }
+            if (c >= 0xD800 && c <= 0xDFFF) { fail("lone surrogate in a text value, which has no UTF-8 form", e.at); }
+          }
+        }
+        valueKind(e.hole)
       }
 
       public valueKind(hole: Int): Int {
@@ -1111,9 +1157,15 @@ Comparisons and arithmetic.
             fail("/ without a float operand; databases divide integers differently", e.at);
           }
           if (op == opMod && float && varies(ruleKinds)) { fail("% of a float; SQLite truncates it to an integer", e.at); }
-          if (literalSign(e.right) == 0 && varies(ruleKinds)) { fail("${opTexts[op]} by zero; databases differ", e.at); }
+          if (isZero(e.right) && varies(ruleKinds)) { fail("${opTexts[op]} by zero; databases differ", e.at); }
         }
         constant(e);
+        if (op == opDiv || float) {
+          let x = floatOf(e);
+          if (x != null && x - x != 0.0 && varies(ruleKinds)) {
+            fail("constant arithmetic gives infinity or NaN; databases differ", e.at);
+          }
+        }
         if (op == opDiv || float) {
           kindFloat
         } else if (left == kindInteger && right == kindInteger) {
@@ -1151,7 +1203,7 @@ Comparisons and arithmetic.
           null
         };
         if (escape != null) {
-          escaped(escape, literal, pattern);
+          escaped(escape, literal ?? valueText(pattern), pattern);
         } else if (varies(ruleLikeEscape)) {
           if (literal == null) {
             fail("LIKE without ESCAPE takes only a literal pattern", pattern.at);
@@ -1162,7 +1214,8 @@ Comparisons and arithmetic.
         kindBoolean
       }
 
-`escaped` checks an `ESCAPE` string, and a literal pattern's escapes.
+`escaped` checks an `ESCAPE` string, and a pattern's escapes, if it's
+a literal or a value.
 
       private escaped(escape: CommonToken, literal: String?, pattern: CommonExpr): Void throws Bubble {
         let esc = lexer.stringValue(escape);
@@ -1285,9 +1338,25 @@ Comparisons and arithmetic.
               fail("${described(k)} in SUBSTR", args[i].at);
             }
           }
-          if (literalSign(args[1]) <= 0 && varies(ruleSubstr)) { fail("SUBSTR start below 1; databases differ", args[1].at); }
-          if (args.length > 2 && literalSign(args[2]) < 0 && varies(ruleSubstr)) {
-            fail("SUBSTR length below 0; databases differ", args[2].at);
+          let start = constantOf(args[1], lexer, holes);
+          let below = start.kind == constantInteger && start.integer < 1i64;
+          if ((literalSign(args[1]) <= 0 || below) && varies(ruleSubstr)) {
+            fail("SUBSTR start below 1; databases differ", args[1].at);
+          }
+          if (args.length > 2) {
+            let length = constantOf(args[2], lexer, holes);
+            let negative = length.kind == constantInteger && length.integer < 0i64;
+            if ((literalSign(args[2]) < 0 || negative) && varies(ruleSubstr)) {
+              fail("SUBSTR length below 0; databases differ", args[2].at);
+            }
+          }
+          for (var i = 1; i < args.length; i += 1) {
+            let k = constantOf(args[i], lexer, holes);
+            let wide = k.kind == constantInteger && (k.integer < minInt32 || k.integer > maxInt32);
+            if (wide && hasTarget("postgres")) {
+              let which = if (i == 1) { "start" } else { "length" };
+              fail("SUBSTR ${which} past 32 bits; PostgreSQL refuses it", args[i].at);
+            }
           }
         }
         if (callee == fnLength) { kindInteger } else { kindText }
@@ -1374,6 +1443,15 @@ rule's letters, or a target's own databases do, by its `?`.
         false
       }
 
+`hasTarget` says whether a database, by its lexing name, is a target.
+
+      public hasTarget(lexing: String): Boolean {
+        for (let d of targets) {
+          if (lexingName(d) == lexing) { return true; }
+        }
+        false
+      }
+
 A kind's family, where integers and floats are both numbers, or 0 for
 unknown and `NULL`.
 
@@ -1411,6 +1489,101 @@ unknown and `NULL`.
 
       private isNullValue(e: CommonExpr): Boolean {
         e is ValueExpr && holeValue(e.hole) is SqlNull
+      }
+
+`isZero` is whether an expression is a constant zero: a literal, or a
+value or arithmetic on them, as `floatOf` reads it.
+
+      private isZero(e: CommonExpr): Boolean {
+        if (literalSign(e) == 0) { return true; }
+        let x = floatOf(e);
+        if (x != null) { isFloatZero(x) } else { false }
+      }
+
+`floatOf` is a constant's value read as a float, or null if it isn't
+one: number literals and values, and `+`, `-`, `*`, `/`, signs, `ABS`,
+and casts to a number, of those, and `%` of integers. It's only for zero divisors
+and results past a float's range, so a decimal's rounding doesn't
+matter.
+
+      private floatOf(e: CommonExpr): Float64? {
+        let k = constantOf(e, lexer, holes);
+        if (k.kind == constantInteger) { return k.integer.toFloat64Unsafe(); }
+        if (k.kind == constantFloat) { return k.float; }
+        when (e) {
+          is LiteralExpr -> if (e.literal == literalDecimal) { decimalFloat(e.at) } else { null };
+          is UnaryExpr -> do {
+            if (e.op == opNot) { return null; }
+            let x = floatOf(e.operand);
+            if (x == null) { null } else if (e.op == opPos) { x } else { -x }
+          };
+          is BinaryExpr -> do {
+            let op = e.op;
+            if (op != opAdd && op != opSub && op != opMul && op != opDiv) { return null; }
+            let a = floatOf(e.left);
+            let b = floatOf(e.right);
+            if (a == null || b == null) { return null; }
+            floatArithmetic(op, a ?? 0.0, b ?? 0.0)
+          };
+          is CastExpr -> if (e.target == castText) { null } else { floatOf(e.operand) };
+          is CallExpr -> do {
+            if (e.callee != fnAbs || e.args.length != 1) { return null; }
+            let x = floatOf(e.args[0]);
+            if (x == null) { null } else if (x < 0.0) { -x } else { x }
+          };
+          else -> null;
+        }
+      }
+
+`floatArithmetic` works out `+`, `-`, `*`, or `/` of two floats, or
+null for a division by zero.
+
+      private floatArithmetic(op: Int, a: Float64, b: Float64): Float64? {
+        if (op == opAdd) {
+          a + b
+        } else if (op == opSub) {
+          a - b
+        } else if (op == opMul) {
+          a * b
+        } else if (isFloatZero(b)) {
+          null
+        } else {
+          (a / b) orelse null
+        }
+      }
+
+`decimalFloat` reads a decimal literal as a float, roughly.
+
+      private decimalFloat(t: CommonToken): Float64 {
+        let text = lexer.runs[t.run];
+        var x = 0.0;
+        var scale = 1.0;
+        var point = false;
+        for (var i = t.begin; i < t.end; i = text.next(i)) {
+          let c = text[i];
+          if (c == char'.') {
+            point = true;
+          } else {
+            let d = (c - char'0').toFloat64();
+            if (point) {
+              scale = scale * 0.1;
+              x = x + d * scale;
+            } else {
+              x = x * 10.0 + d;
+            }
+          }
+        }
+        x
+      }
+
+`valueText` is a value hole's text, or null if it holds anything else.
+
+      private valueText(e: CommonExpr): String? {
+        if (e is ValueExpr) {
+          let v = holeValue(e.hole);
+          if (v is SqlText) { return v.value; }
+        }
+        null
       }
 
 `literalSign` is a literal number's sign, with its `-` or `+`: -1, 0,
@@ -1526,6 +1699,11 @@ rather than writing it.
       if (x - x != 0.0) { return new Constant(constantNotFinite, 0i64, 0.0, bound); }
       new Constant(constantFloat, 0i64, x, bound)
     }
+
+`isFloatZero` is whether a float is either zero, since Temper's `==`
+tells `0.0` and `-0.0` apart.
+
+    let isFloatZero(x: Float64): Boolean { x == 0.0 || x == -0.0 }
 
     let overflowed(bound: Boolean): Constant { new Constant(constantOverflow, 0i64, 0.0, bound) }
 
@@ -1903,10 +2081,23 @@ around it need give one.
         }
       }
 
-`part` is a hole's part, among the values or those folding made.
+`part` is a hole's part, among the values or those folding made. For
+a target, a float zero binds as `0.0`, so a `-0.0` reads back the same
+everywhere.
 
       public part(index: Int): QueryPart {
-        if (index < values.length) { values[index] } else { folded[index - values.length] }
+        if (index >= values.length) { return folded[index - values.length]; }
+        let part = values[index];
+        if (target != null) {
+          if (part is QueryParam) {
+            let v = part.value;
+            // `-0.0` too, which SQLite stores as `0.0` and DuckDB keeps.
+            if (v is SqlFloat) {
+              if (isFloatZero(v.value)) { return new QueryParam(new SqlFloat(0.0)); }
+            }
+          }
+        }
+        part
       }
 
 An operand of `AND` or `OR`, for a target: in parentheses only if it's

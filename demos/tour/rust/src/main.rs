@@ -123,6 +123,9 @@ fn main() -> temper_core::Result<()> {
     refused("SELECT 'a' || 1 + 2 AS x");
     // Some databases turn 0 into text, and others refuse it.
     refused("SELECT CASE WHEN a > 1 THEN 'x' ELSE 0 END AS c FROM t");
+    // Databases name a + 1 differently (a+1, ?column?, or (a + 1)), so
+    // an expression in a FROM subquery needs an alias.
+    refused("SELECT * FROM (SELECT a + 1 FROM t) AS s");
     // A placeholder in the text would shift every value's place.
     refused("SELECT a FROM t WHERE id = ?");
     // What isn't in the common dialect yet is refused too.
@@ -218,7 +221,7 @@ fn main() -> temper_core::Result<()> {
     let created = Identifier::named("created")?;
     println!("{}", search(None, None, created.clone(), false, 0)?);
     println!("{}", search(Some("Launch"), None, created, false, 0)?);
-    println!("{}", search(None, Some(100), Identifier::named("Total")?, true, 2)?);
+    println!("{}", search(None, Some(100), Identifier::named("total")?, true, 2)?);
 
     // A query for fewer databases relaxes the checks for the others: MySQL
     // reads \ in a string as an escape, so it's refused only while MySQL is

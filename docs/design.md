@@ -9,10 +9,9 @@ the pieces a safe-composition framework, a query builder, or an admin
 tool needs: quoting and templates for each database, done right.
 
 The common dialect is [designed below](#the-common-dialect), and
-usable end to end: its tag, lexer, expressions, statements, and
-rendering for each database are done, checked on the real engines, and
-the rest of the checks are next. Quoting and per-database templates are
-done.
+usable end to end: its tag, lexer, expressions, statements, check
+stage, and rendering for each database are done, and checked on the
+real engines. Quoting and per-database templates are done.
 
 ## Goals
 
@@ -225,8 +224,8 @@ Done:
   rendered for it, and render for each target database, as
   [below](#rendering-per-dialect).
 
-Next: the rest of the [common dialect](#the-common-dialect)'s check
-stage.
+Next: fuzzing the [common dialect](#the-common-dialect) (chunk 7 of
+its [plan](#plan)).
 
 Also planned:
 
@@ -241,9 +240,10 @@ Also planned:
 ## The common dialect
 
 Status: designed (2026-11-07), with its open questions decided
-(2026-11-09, under [Decided](#decided)). Built: chunks 1 to 4 of the
-[plan](#plan): the lexer and tag, expressions, statements, and
-rendering for each database.
+(2026-11-09, under [Decided](#decided)). Built: chunks 1 to 5 of the
+[plan](#plan), and most of 6: the lexer and tag, expressions,
+statements, rendering for each database, the check stage, and the
+engine checks.
 
 One query, written once, rendered for each database:
 
@@ -499,7 +499,8 @@ gives the first problem with its position:
   `SUBSTR` start below 1, and an `UPDATE` that reads a column it set
   earlier in the same `SET`, since MySQL assigns left to right.
 
-Built so far, for expressions: `= NULL` and `NULL` in `IN` lists, and
+Built (finished in chunk 5, 2026-11-11), for expressions: `= NULL`
+and `NULL` in `IN` lists, and
 null values in their place (every value is known when the query is
 built, so a null one is the same trap as `NULL` in the text),
 `/` without a float operand (a float value, a decimal, `AVG`, a
@@ -512,7 +513,18 @@ show that databases convert differently: text or booleans in
 arithmetic, numbers or text as conditions, comparing different kinds,
 `CASE` and `COALESCE` mixing kinds, booleans or floats in `||`, and
 casts of booleans, of floats to `INTEGER` or `TEXT`, and of strings
-that aren't plain numbers to `INTEGER` or `DOUBLE`.
+that aren't plain numbers to `INTEGER` or `DOUBLE`. Values are read as
+literals are, since each is known when the query is built: a zero
+divisor (a value, or arithmetic giving zero), a `SUBSTR` start or
+length (and, with PostgreSQL a target, one past 32 bits, which its
+`SUBSTR` refuses), a `LIKE` pattern's escapes, and float arithmetic
+past a finite float, decimals included. And values themselves: a float
+that's infinite or NaN (SQLite reads NaN as `NULL`, and MySQL takes
+neither), or subnormal with a MySQL profile a target (outside the range
+its manual gives `DOUBLE`), and text with NUL (PostgreSQL refuses it,
+and SQLite's functions stop there, giving `length` 1 for `'a\0b'`) or
+lone surrogates. A float zero isn't refused but evened out: it binds
+as `0.0`, since SQLite stores `-0.0` as `0.0` and DuckDB keeps it.
 
 Built for statements: conditions in `WHERE`, `HAVING`, and `ON`;
 `LIMIT` and `OFFSET` values that aren't non-negative integers;
@@ -522,11 +534,27 @@ takes any row's); `SELECT` aliases where databases could read a
 column instead (outside `ORDER BY`, inside its expressions, or
 matching only without regard to case); `SELECT DISTINCT` ordered by
 something not selected; a table twice in `FROM`; a column twice in
-`INSERT` or `SET`; and `ON` reading a table joined after it. For MySQL
+`INSERT` or `SET`; `ON` reading a table joined after it; a subquery
+in `FROM` with an unaliased expression, which databases name
+differently (`a+1` in SQLite, `?column?` in PostgreSQL, `(a + 1)` in
+DuckDB), or with two columns of one name, which MySQL refuses and
+SQLite and DuckDB rename differently (`x:1`, `x_1`); places in
+`GROUP BY` and `ORDER BY` that are no item's, `GROUP BY` an
+aggregate's place, a subquery that gives one value with more than one
+item, and an `INSERT` whose query gives a different number of columns
+(all four fail everywhere, so the checks just say why sooner); and
+names written in two cases in
+one statement (`"Id"` and `id`), which PostgreSQL reads as two names
+and the others as one (SQLite and DuckDB even quoted, checked), but for
+MySQL's table names and their aliases, which follow its
+`lower_case_table_names` setting, so they're refused for MySQL alone
+too. For MySQL
 targets also: the `UPDATE … SET` trap, a subquery reading the table an
 `UPDATE`, `DELETE`, or `INSERT … VALUES` changes, `LIMIT` in an `IN`
-subquery, and `*` after other items (`a, *`; every engine takes
-`*, a`). Each rests on MySQL's own
+subquery, `*` after other items (`a, *`; every engine takes
+`*, a`), and `NULLS` on a place at or after a `*`, which rendering
+for MySQL can't sort by `x IS NULL` (the column is the schema's). Each
+rests on MySQL's own
 behavior, which [engine checks](#engine-checks) names the case for.
 
 Which of alias and column a name means: in `HAVING`, for a column not
@@ -585,7 +613,9 @@ expression checks there because databases differ, when the targets
 left read the construct alike (each check has a letter per profile;
 `src/common-expressions.temper.md` lists them). The traps (`NULL` that
 never matches, `ESCAPE` misused, aggregates in aggregates) apply to
-every target, and so, for now, do the other statement checks.
+every target, and so, for now, do the other statement checks, but for
+names in two cases, which have letters of their own (`abaaa` for
+columns and `ab??a` for tables).
 The default set is every profile now; a new database (SQL Server,
 say) joins it only in a major version, so an upgrade can't make
 working queries fail.
@@ -629,7 +659,7 @@ would check it, so a value can't land in a quote or comment.
 | `ORDER BY c` beside an item PostgreSQL names `c`, such as `CAST(c AS TEXT)` | `c` | `t.c` | `c` | `c` | Qualify for PostgreSQL, which would read the item; refuse where the table isn't known |
 | `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` (refuses `LIMIT -1`) | Emulate, as each manual says |
 | Default `NULL` order | smallest | largest | smallest | last, both directions, unless `default_null_order` says otherwise | Common: smallest |
-| `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x NULLS LAST` | `NULLS` where the default differs, and always for DuckDB, whose default is a setting; MySQL, which lacks it, sorts by `x IS NULL` first, repeating `x` and its values (for a place or an alias, its item) |
+| `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x NULLS LAST` | `NULLS` where the default differs, and always for DuckDB, whose default is a setting; MySQL, which lacks it, sorts by `x IS NULL` first, repeating `x` and its values (for a place or an alias, its item; refused for a place at or after a `*`) |
 | `CAST(x AS INTEGER)` | `INTEGER` | `BIGINT` | `SIGNED` | `BIGINT` | Type names map; floats and decimals to integer truncate in SQLite and round in the others (a float's halves to even, a decimal's away from zero), and text reads as its leading number in SQLite and MySQL (`'12abc'` is 12, `'Al'` is 0) but fails in the others: documented |
 | `CAST(x AS DOUBLE)` | `REAL` | `DOUBLE PRECISION` | `DOUBLE` (MySQL 8.0.17) | `DOUBLE` | Map |
 | `CAST(x AS TEXT)` | `TEXT` | `TEXT` | `CHAR` | `VARCHAR` | Map |
@@ -778,6 +808,11 @@ Statement rules, from the [parser](#the-parser) and the
 | `ON` reading a table joined after it | Confirmed: SQLite takes it, DuckDB fails | Confirmed: both fail | Confirmed: fails |
 | A column twice in `INSERT` or `SET` | Confirmed: SQLite takes both, DuckDB refuses both | Confirmed: PostgreSQL refuses both; MariaDB refuses `INSERT` and assigns `SET` left to right | Confirmed: as MariaDB |
 | A `SET` reading a column set before it | Confirmed: the old value | Confirmed: the old value in PostgreSQL, and the new in MariaDB, left to right ("SET reading a column set before it, read back") | Confirmed: the new, which the `UPDATE … SET` trap rests on |
+| A place past the items, or `GROUP BY` an aggregate's place, and a subquery giving two columns where one goes | Confirmed: refused | Pending CI: refused | Pending CI: refused |
+| A name twice in a `FROM` subquery | Confirmed: taken, renamed `x:1` in SQLite and `x_1` in DuckDB | Pending CI: PostgreSQL takes it, MariaDB refuses it | Pending CI: refused |
+| A name in another case (`"ID"` for `id`, `"PEOPLE"` for `people`) | Confirmed: the same name, quoted or not | Pending CI: PostgreSQL refuses both; MariaDB takes the column and refuses the table | Pending CI: as MariaDB, with `lower_case_table_names` 0 |
+| NUL in a text value | Confirmed: SQLite's `length` stops at it (1 for `'a\0b'`), DuckDB's doesn't (3) | Pending CI: PostgreSQL refuses it, MariaDB gives 3 | Pending CI: 3 |
+| A float zero value, and `SELECT DISTINCT` with `NULLS LAST` (`x IS NULL, x` for MySQL) | Confirmed: `0.0`, and the same rows | Pending CI | Pending CI |
 
 ### Testing
 
@@ -824,8 +859,13 @@ Each chunk is one commit, tested on every backend:
    above, the per-database lexer oracle, recorded targets that relax
    the expression checks, and the engine corpus, checked on SQLite and
    DuckDB.
-5. **Check stage** (medium, ~500): every rule above, at construction
-   and at render.
+5. **Check stage** (done, 2026-11-11): every rule above, at
+   construction, for each target, so a query that builds renders for
+   each; rendering keeps its own guards for queries made unchecked.
+   It added values (non-finite, subnormal, NUL), constant zero
+   divisors and float overflow, `SUBSTR` and `LIKE` values, places,
+   `FROM` subquery names, column counts, names in two cases, and
+   MySQL's `NULLS` beside `*`; it evens out a float zero to `0.0`.
 6. **Engines** (medium): the rest of the rules from manuals confirmed
    on PostgreSQL and MariaDB in CI, a MySQL service, and the statement
    rules' corpus. Cases written and confirmed on SQLite, DuckDB,
@@ -1045,7 +1085,9 @@ Each has a recommendation, but stays open until decided.
    `sqliteQuery`? Recommended: the plain names.
 2. **NUL in SQLite strings:** reject (now), or write an expression
    such as `'a'||char(0)||'b'` where an expression is allowed?
-   Recommended: keep rejecting; bind such values as parameters.
+   Recommended: keep rejecting; bind such values as parameters, in a
+   database's own query, since common queries refuse NUL in text
+   values too (SQLite's functions stop there).
 3. **Empty names:** rejected everywhere now, though SQLite accepts
    `""`. Keep that? Recommended: keep rejecting them everywhere.
 4. **MariaDB:** share the MySQL profiles (now), or get its own, for
@@ -1058,6 +1100,13 @@ Each has a recommendation, but stays open until decided.
    (`ColumnType` differs the most)? Recommended: start with SQLite's
    column types, defaults, foreign-key actions, functions, and
    operators.
+7. **Result names of unaliased expressions** differ: `SELECT
+   count(*)` names its column `count(*)` in SQLite, `count` in
+   PostgreSQL, `COUNT(*)` in MySQL (from the rendered text), and
+   `count_star()` in DuckDB, which matters to code that reads columns
+   by name. Refuse them, write a canonical alias when rendering, or
+   document it? Recommended: write a canonical alias, as its own
+   change, since PostgreSQL's `ORDER BY` reads output names.
 
 ## Decided
 
@@ -1167,7 +1216,7 @@ line, the column, and why.
 
 1. **One program per language,** in `demos/tour/`, built and run with
    each language's own tools, printing exactly `demos/tour/expected.txt`
-   (85 lines). `demos/run.py` runs the tour after the example, and CI
+   (86 lines). `demos/run.py` runs the tour after the example, and CI
    runs it after each backend's tests.
 2. **Temper too,** as a test (`src/tour-tests.temper.md`), since only
    Temper has the `sql` tag: the other languages build each common

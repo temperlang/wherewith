@@ -676,6 +676,19 @@ For every target:
 - **Names twice:** a table or alias twice in `FROM`, a column twice in
   an `INSERT` or `SET`, and an `ON` that reads a table joined after it,
   which SQLite takes and the others refuse.
+- **Places** in `GROUP BY` and `ORDER BY` that are no item's, which
+  every database refuses, and in `GROUP BY` an aggregate's.
+- **A subquery in `FROM`** whose items aren't each a column or
+  aliased, since databases name expressions differently (`a+1`,
+  `?column?`, or `(a + 1)`), or that gives two columns one name, which
+  MySQL refuses and the others rename differently.
+- **Counts:** a subquery that gives one value (`(SELECT …)`, or after
+  `IN`) with more than one item, and an `INSERT` whose query gives a
+  different number of columns than it lists.
+- **Names in two cases** in one statement, such as `"Id"` and `id`,
+  which PostgreSQL reads as two names and the others as one, but for
+  MySQL's table names, which follow a setting; see
+  [names in two cases](#names-in-two-cases).
 
 Names match without regard to ASCII case, since MySQL matches column
 names and aliases that way.
@@ -693,6 +706,9 @@ For MySQL and MariaDB (either profile):
   does.
 - **`ORDER BY` an alias** that a plain column has, `SELECT a, b AS a
   … ORDER BY a`, which MySQL refuses as ambiguous.
+- **`NULLS` on a place at or after a `*`** (`SELECT *, a … ORDER BY 2
+  NULLS LAST`), since MySQL sorts by `x IS NULL` first, and the checks
+  can't see which column `x` is.
 
 For PostgreSQL, a name alone in `ORDER BY` that it would read
 differently, by its [output names](#output-names): an alias that
@@ -711,12 +727,22 @@ which holds the holes and targets.
           is UpdateStatement -> update(s);
           is DeleteStatement -> deleteFrom(s);
         }
+        new NameCases(c).statement(s);
       }
 
 `subquery` checks a subquery in an expression, as its own scope for
 aggregates, and gives its kind: its one column's, or unknown. A
 subquery in `FROM` is its own scope too, but can't read the columns of
 the query it's in. `inSubquery` adds what `IN` refuses.
+
+`single` checks a subquery that gives one value, as in `(SELECT …)` or
+`IN (SELECT …)`: it must have one item, or `*`.
+
+      public single(s: SelectStatement): Int throws Bubble {
+        let items = s.items;
+        if (items.length > 1) { c.fail("a subquery here gives one column, not ${items.length.toString()}", items[1].at); }
+        subquery(s)
+      }
 
       public subquery(s: SelectStatement): Int throws Bubble {
         c.subqueries += 1;
@@ -772,6 +798,7 @@ the query it's in. `inSubquery` adds what `IN` refuses.
         }
         count(s.limit, "LIMIT");
         count(s.offset, "OFFSET");
+        places(s);
         aliases(s);
         grouping(s);
         distinctOrder(s);
@@ -799,7 +826,10 @@ only tables joined before it.
       private source(s: CommonSource, names: ListBuilder<String>): Void throws Bubble {
         var named = s.alias;
         when (s) {
-          is QuerySource -> scoped(s.query.query);
+          is QuerySource -> do {
+            scoped(s.query.query);
+            derived(s.query.query);
+          };
           is TableSource -> named = named ?? s.table.name;
         }
         let n = named;
@@ -829,6 +859,90 @@ only tables joined before it.
         }
         let children = exprChildren(e);
         for (let child of children) { joinedLater(child, names, from); }
+      }
+
+A subquery in `FROM` gives its columns names, which the query reads
+them by: each item a column's name or an alias, since databases name
+an expression differently (`a+1`, `?column?`, or `(a + 1)`), and no
+name twice, which MySQL refuses and the others rename differently
+(`x:1` or `x_1`). Names match without regard to case, as MySQL's do.
+
+      private derived(q: SelectStatement): Void throws Bubble {
+        let names = new ListBuilder<String>();
+        let items = q.items;
+        for (let item of items) {
+          let e = item.expr;
+          if (e != null) {
+            let alias = item.alias;
+            var at = e.at;
+            let name = if (alias != null) {
+              at = alias.token;
+              c.nameText(alias)
+            } else if (e is ColumnExpr) {
+              c.nameText(e.column)
+            } else {
+              ""
+            };
+            if (name.isEmpty) {
+              c.fail("an expression in a FROM subquery needs an alias; databases name it differently", item.at);
+            }
+            let key = folded(name);
+            for (var i = 0; i < names.length; i += 1) {
+              if (names[i] == key) {
+                c.fail("${canonicalName(name)} names two columns of a FROM subquery; MySQL refuses it, and others rename one; give each its own alias", at);
+              }
+            }
+            names.add(key);
+          }
+        }
+      }
+
+Places in `GROUP BY` and `ORDER BY` (`ORDER BY 2`) must be places of
+items, which every database checks, but with a `*` before them, which
+stands for columns the checks can't see. MySQL needs the item for
+`NULLS` (it sorts by `x IS NULL` first), so there a place can't be a
+`*`'s or come after one. `GROUP BY` can't name an aggregate.
+
+      private places(s: SelectStatement): Void throws Bubble {
+        let items = s.items;
+        // The first `*`'s place, or 0.
+        var star = 0;
+        for (var i = 0; i < items.length && star == 0; i += 1) {
+          if (items[i].expr == null) { star = i + 1; }
+        }
+        for (let g of s.groups) {
+          let place = itemPlace(g, items, star, "GROUP BY");
+          if (place > 0 && (star == 0 || place < star)) {
+            let item = items[place - 1].expr;
+            if (item != null && hasAggregate(item)) {
+              c.fail("GROUP BY ${place.toString()} is an aggregate's place; group by columns", g.at);
+            }
+          }
+        }
+        for (let o of s.orders) {
+          let place = itemPlace(o.expr, items, star, "ORDER BY");
+          if (star > 0 && place >= star && o.nullsFirst == o.descending && mysql()) {
+            c.fail(
+              "NULLS on a place at or after a * in ORDER BY; MySQL needs the column to sort its NULLs, so name it",
+              o.expr.at,
+            );
+          }
+        }
+      }
+
+`itemPlace` is a place's value, refused if it's no item's, or -1 for
+anything else.
+
+      private itemPlace(e: CommonExpr, items: List<SelectItem>, star: Int, clause: String): Int throws Bubble {
+        let place = position(e);
+        if (place < 0) { return -1; }
+        if (place == 0 || (star == 0 && place > items.length)) {
+          c.fail(
+            "${clause} ${place.toString()} isn't an item's place; the SELECT has ${counted(items.length, "item")}",
+            e.at,
+          );
+        }
+        place
       }
 
 A constant item in `GROUP BY` or `ORDER BY`, but an integer, which is
@@ -1143,7 +1257,21 @@ an item itself, or a column when the items have `*`.
           }
         }
         let query = s.query;
-        if (query != null) { select(query); }
+        if (query != null) {
+          select(query);
+          let items = query.items;
+          var star = false;
+          for (let item of items) {
+            if (item.expr == null) { star = true; }
+          }
+          let n = s.columns.length;
+          if (!star && items.length != n) {
+            c.fail(
+              "INSERT lists ${counted(n, "column")}, but its query gives ${items.length.toString()}",
+              query.at,
+            );
+          }
+        }
       }
 
       private update(s: UpdateStatement): Void throws Bubble {
@@ -1273,6 +1401,128 @@ alone, since its value could differ.
         let table = e.table;
         let column = canonicalName(c.nameText(e.column));
         if (table != null) { "${canonicalName(c.nameText(table))}.${column}" } else { column }
+      }
+    }
+
+### Names in two cases
+
+`NameCases` refuses a name written in two cases in one statement,
+such as `"Id"` and `id`: PostgreSQL reads them as two names, SQLite
+and DuckDB as one, and MySQL as one column, but its table names (and
+their aliases) follow its `lower_case_table_names` setting. So columns
+and aliases must be written alike for PostgreSQL beside the others,
+and table names for PostgreSQL or MySQL beside the others or each
+other, or for MySQL alone, whose setting varies. Columns and tables are
+apart: a column `users` in a table `"Users"` is fine.
+
+| Rule | Letters | Why |
+| --- | --- | --- |
+| Columns and their aliases | `abaaa` | PostgreSQL alone matches them with regard to case |
+| Tables, schemas, and their aliases | `ab??a` | The same, and MySQL's depend on a setting |
+
+    let ruleColumnCase = "abaaa";
+    let ruleTableCase = "ab??a";
+
+    class NameCases(private c: CommonChecker) {
+      private columns: ListBuilder<String> = new ListBuilder<String>();
+      private tables: ListBuilder<String> = new ListBuilder<String>();
+
+      public statement(s: CommonStatement): Void throws Bubble {
+        when (s) {
+          is SelectStatement -> select(s);
+          is InsertStatement -> do {
+            table(s.table);
+            for (let column of s.columns) { name(column, false); }
+            for (let row of s.rows) {
+              for (let e of row) { expr(e); }
+            }
+            let query = s.query;
+            if (query != null) { select(query); }
+          };
+          is UpdateStatement -> do {
+            table(s.table);
+            for (let column of s.columns) { name(column, false); }
+            for (let e of s.values) { expr(e); }
+            optional(s.filter);
+          };
+          is DeleteStatement -> do {
+            table(s.table);
+            optional(s.filter);
+          };
+        }
+      }
+
+      private select(s: SelectStatement): Void throws Bubble {
+        for (let item of s.items) {
+          let e = item.expr;
+          if (e != null) { expr(e); }
+          let t = item.table;
+          if (t != null) { name(t, true); }
+          let alias = item.alias;
+          if (alias != null) { name(alias, false); }
+        }
+        let first = s.source;
+        if (first != null) { source(first); }
+        for (let join of s.joins) {
+          source(join.source);
+          optional(join.condition);
+        }
+        optional(s.filter);
+        for (let g of s.groups) { expr(g); }
+        optional(s.having);
+        for (let o of s.orders) { expr(o.expr); }
+      }
+
+      private source(s: CommonSource): Void throws Bubble {
+        when (s) {
+          is TableSource -> table(s.table);
+          is QuerySource -> select(s.query.query);
+        }
+        let alias = s.alias;
+        if (alias != null) { name(alias, true); }
+      }
+
+      private table(t: TableName): Void throws Bubble {
+        let schema = t.schema;
+        if (schema != null) { name(schema, true); }
+        name(t.name, true);
+      }
+
+      private optional(e: CommonExpr?): Void throws Bubble {
+        if (e != null) { expr(e); }
+      }
+
+      private expr(e: CommonExpr): Void throws Bubble {
+        if (e is ColumnExpr) {
+          let t = e.table;
+          if (t != null) { name(t, true); }
+          name(e.column, false);
+          return;
+        }
+        if (e is SubqueryExpr) {
+          select(e.query);
+          return;
+        }
+        let children = exprChildren(e);
+        for (let child of children) { expr(child); }
+      }
+
+      private name(n: CommonName, isTable: Boolean): Void throws Bubble {
+        let seen = if (isTable) { tables } else { columns };
+        if (!c.varies(if (isTable) { ruleTableCase } else { ruleColumnCase })) { return; }
+        let text = c.nameText(n);
+        let key = folded(text);
+        for (var i = 0; i < seen.length; i += 1) {
+          let other = seen[i];
+          if (other != text && folded(other) == key) {
+            let kind = if (isTable) { "table names" } else { "names" };
+            c.fail(
+              "${canonicalName(other)} and ${canonicalName(text)} differ only in case, which databases read differently for ${kind}; write them alike",
+              n.token,
+            );
+          }
+        }
+        seen.add(text);
       }
     }
 
