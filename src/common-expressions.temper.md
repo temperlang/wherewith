@@ -1756,15 +1756,16 @@ in parentheses if it has less.
               // A space keeps `- -x` from starting a comment.
               let operand = e.operand;
               if (operand is UnaryExpr && operand.op != opNot && !explicit) { out.append(" "); }
-              write(operand, levelUnary);
+              typed(operand, [], levelUnary, "BIGINT");
             }
           };
           is BinaryExpr -> do {
             let level = levelOf(e);
             let comparing = level == levelPredicate;
-            write(e.left, if (comparing) { levelConcat } else { level });
+            let fallback = if (comparing) { "TEXT" } else { "BIGINT" };
+            typed(e.left, [e.right], if (comparing) { levelConcat } else { level }, fallback);
             out.append(" ${opTexts[e.op]} ");
-            write(e.right, if (comparing) { levelConcat } else { level + 1 });
+            typed(e.right, [e.left], if (comparing) { levelConcat } else { level + 1 }, fallback);
           };
           is ChainExpr -> do {
             let t = target;
@@ -1783,13 +1784,20 @@ in parentheses if it has less.
             }
           };
           is IsNullExpr -> do {
-            write(e.operand, levelConcat);
+            typed(e.operand, [], levelConcat, "TEXT");
             out.append(if (e.negated) { " IS NOT NULL" } else { " IS NULL" });
           };
           is InListExpr -> do {
-            write(e.operand, levelConcat);
+            let items = e.items;
+            let type = castType(e.operand, items, true, "TEXT");
+            if (type.isEmpty) { write(e.operand, levelConcat); } else { castValue(valueHole(e.operand), type); }
             out.append(if (e.negated) { " NOT IN (" } else { " IN (" });
-            list(e.items);
+            var first = true;
+            for (let item of items) {
+              if (!first) { out.append(", "); }
+              first = false;
+              typed(item, [e.operand], 0, "TEXT");
+            }
             out.append(")");
           };
           is InQueryExpr -> do {
@@ -1798,11 +1806,13 @@ in parentheses if it has less.
             node(e.query);
           };
           is BetweenExpr -> do {
-            write(e.operand, levelConcat);
+            // PostgreSQL reads `a BETWEEN b AND c` as `a >= b AND a <= c`,
+            // so `b` alone types a value `a`.
+            typed(e.operand, [e.low], levelConcat, "TEXT");
             out.append(if (e.negated) { " NOT BETWEEN " } else { " BETWEEN " });
-            write(e.low, levelConcat);
+            typed(e.low, [e.operand], levelConcat, "TEXT");
             out.append(" AND ");
-            write(e.high, levelConcat);
+            typed(e.high, [e.operand], levelConcat, "TEXT");
           };
           is LikeExpr -> do {
             write(e.operand, levelConcat);
@@ -1828,12 +1838,23 @@ in parentheses if it has less.
             }
             out.append("${called}(");
             if (e.distinct) { out.append("DISTINCT "); }
-            if (e.args.isEmpty) {
+            let args = e.args;
+            if (args.isEmpty) {
               out.append("*");
-            } else if (callee == fnCoalesce || callee == fnNullif) {
-              group(e.args);
+            } else if (callee == fnCoalesce) {
+              group(args);
+            } else if (callee == fnNullif) {
+              typed(args[0], [args[1]], 0, "TEXT");
+              out.append(", ");
+              typed(args[1], [args[0]], 0, "TEXT");
+            } else if (callee == fnAbs || callee == fnSum || callee == fnAvg) {
+              typed(args[0], [], 0, "BIGINT");
+            } else if (callee == fnMin || callee == fnMax || callee == fnCount) {
+              typed(args[0], [], 0, "TEXT");
+            } else if (callee == fnSubstr && t != null && t.castsUnknown) {
+              substrArgs(args);
             } else {
-              list(e.args);
+              list(args);
             }
             out.append(")");
           };
@@ -1963,42 +1984,197 @@ its type, which nothing else there gives it.
         if (e is ValueExpr) { e.hole } else { -1 }
       }
 
-`group` writes `CASE` results, or `COALESCE` or `NULLIF` arguments, for
-PostgreSQL casting each value to the group's type when nothing else in
-the group has a type: when the rest are values, strings, and `NULL`.
+`group` writes `CASE` results or `COALESCE` arguments, which
+PostgreSQL gives one type, from those with a type; for PostgreSQL, a
+value among them gets a cast unless another gives it its type.
 
       private group(items: List<CommonExpr>): Void {
-        let type = groupType(items);
         var first = true;
         for (let item of items) {
           if (!first) { out.append(", "); }
           first = false;
-          groupItem(item, type);
+          typed(item, items, 0, "TEXT");
         }
       }
 
-      private groupItem(e: CommonExpr, type: String): Void {
-        let hole = if (type.isEmpty) { -1 } else { valueHole(e) };
-        if (hole >= 0) { castValue(hole, type); } else { write(e, 0); }
+`typed` writes an expression where the grammar needs at least `level`,
+and for PostgreSQL, a value cast to its type, as `castType` says.
+
+      private typed(e: CommonExpr, peers: List<CommonExpr>, level: Int, fallback: String): Void {
+        let type = castType(e, peers, false, fallback);
+        if (type.isEmpty) { write(e, level); } else { castValue(valueHole(e), type); }
       }
 
-      private groupType(items: List<CommonExpr>): String {
+`castType` is the type to cast a value to for PostgreSQL, or "" for
+none. PostgreSQL types a parameter from what's beside it, its `peers`
+(an operator's other operand, or the rest of a `CASE` or `COALESCE`),
+and with drivers that send values untyped, such as `pg`, reads it as
+text or fails when nothing there is typed; so a value gets a cast to
+its own type unless a peer that isn't a value gives it that type (one
+peer, or with `every`, each). A column, or anything PostgreSQL types
+from one, gives a value the column's type, so a value beside one isn't
+cast, keeping indexes usable. A value holding null takes any type it's
+given, or else the first type among its peers, or `fallback`.
+
+      private castType(e: CommonExpr, peers: List<CommonExpr>, every: Boolean, fallback: String): String {
         let t = target;
-        if (t == null || !t.castsUnknown) { return ""; }
-        var type = "";
-        for (let e of items) {
-          if (e is ValueExpr) {
-            let own = valueType(e.hole);
-            if (own != null) {
-              if (type.isEmpty) { type = own; }
+        let hole = valueHole(e);
+        if (t == null || !t.castsUnknown || hole < 0) { return ""; }
+        let own = valueType(hole);
+        var typedBy = every && !peers.isEmpty;
+        for (let peer of peers) {
+          let typing = gives(peer, own);
+          if (every && !typing) { typedBy = false; }
+          if (!every && typing) { typedBy = true; }
+        }
+        if (typedBy) { return ""; }
+        if (own != null) { return own; }
+        for (let peer of peers) {
+          let type = typeOf(peer);
+          if (!type.isEmpty && type != "?") { return type; }
+        }
+        fallback
+      }
+
+`gives` says whether a peer gives a value the type `own` (any type,
+for null): a column, or the same type.
+
+      private gives(peer: CommonExpr, own: String?): Boolean {
+        if (peer is ValueExpr) { return false; }
+        let type = pgType(peer);
+        type == "?" || (if (own != null) { type == own } else { !type.isEmpty })
+      }
+
+`pgType` is the type PostgreSQL gives an expression: "?" for one typed
+from a column, whatever its type; "" for a value, a string, or `NULL`,
+which take their type from around them; or the type's name, with
+`INTEGER` for 32 bits and `NUMERIC` for decimals.
+
+      private pgType(e: CommonExpr): String {
+        let k = fold(e);
+        if (k != null) {
+          return if (k.kind == constantFloat) { "DOUBLE PRECISION" } else if (k.bound) { "BIGINT" } else { integerType(k.integer) };
+        }
+        when (e) {
+          is LiteralExpr -> do {
+            let literal = e.literal;
+            if (literal == literalInteger) {
+              integerType(literalInt64(lexer, e.at))
+            } else if (literal == literalDecimal) {
+              "NUMERIC"
+            } else if (literal == literalTrue || literal == literalFalse) {
+              "BOOLEAN"
+            } else {
+              ""
             }
-          } else if (e is LiteralExpr && e.literal == literalString) {
-            if (type.isEmpty) { type = "TEXT"; }
-          } else if (!(e is LiteralExpr && e.literal == literalNull)) {
-            return "";
+          };
+          is ValueExpr -> "";
+          is ColumnExpr -> "?";
+          is SubqueryExpr -> "?";
+          is UnaryExpr -> if (e.op == opNot) { "BOOLEAN" } else { typeOf(e.operand) };
+          is BinaryExpr -> if (e.op <= opGe) { "BOOLEAN" } else { wider(typeOf(e.left), typeOf(e.right)) };
+          is ChainExpr -> if (e.op == opConcat) { "TEXT" } else { "BOOLEAN" };
+          is CaseExpr -> do {
+            var type = "";
+            for (let r of e.thens) { type = wider(type, typeOf(r)); }
+            let otherwise = e.otherwise;
+            if (otherwise != null) { type = wider(type, typeOf(otherwise)); }
+            type
+          };
+          is CastExpr -> do {
+            let t = target;
+            if (t != null) { t.castNames[e.target] } else { "" }
+          };
+          is CallExpr -> callType(e);
+          else -> "BOOLEAN";
+        }
+      }
+
+      private callType(e: CallExpr): String {
+        let callee = e.callee;
+        if (callee == fnCount) { return "BIGINT"; }
+        if (callee == fnLength) { return "INTEGER"; }
+        let args = e.args;
+        if (callee == fnCoalesce) {
+          var type = "";
+          for (let a of args) { type = wider(type, typeOf(a)); }
+          return type;
+        }
+        if (callee == fnNullif || callee == fnAbs || callee == fnMin || callee == fnMax) { return typeOf(args[0]); }
+        if (callee == fnSum || callee == fnAvg) {
+          let type = typeOf(args[0]);
+          return if (type == "?" || type == "DOUBLE PRECISION") {
+            type
+          } else if (callee == fnSum && type == "INTEGER") {
+            "BIGINT"
+          } else if (type.isEmpty) {
+            ""
+          } else {
+            "NUMERIC"
+          };
+        }
+        "TEXT"
+      }
+
+`typeOf` is an operand's type for the type of what holds it: as
+`pgType`, but a value's own, and `TEXT` for a string.
+
+      private typeOf(e: CommonExpr): String {
+        when (e) {
+          is ValueExpr -> valueType(e.hole) ?? "";
+          is LiteralExpr -> if (e.literal == literalString) { "TEXT" } else { pgType(e) };
+          else -> pgType(e);
+        }
+      }
+
+`wider` is the type PostgreSQL gives two numbers, the wider, or the
+first type known.
+
+      private wider(a: String, b: String): String {
+        if (a == "?" || b == "?") { return "?"; }
+        if (a.isEmpty) { return b; }
+        let x = numberRank(a);
+        let y = numberRank(b);
+        if (x > 0 && y > x) { b } else { a }
+      }
+
+      private numberRank(type: String): Int {
+        if (type == "INTEGER") {
+          1
+        } else if (type == "BIGINT") {
+          2
+        } else if (type == "NUMERIC") {
+          3
+        } else if (type == "DOUBLE PRECISION") {
+          4
+        } else {
+          0
+        }
+      }
+
+      private integerType(n: Int64): String {
+        if (n >= -0x8000_0000_i64 && n <= 0x7FFF_FFFF_i64) { "INTEGER" } else { "BIGINT" }
+      }
+
+`substrArgs` writes `SUBSTR`'s arguments for PostgreSQL, whose
+`SUBSTR` takes only 32-bit integers, so a start or length that isn't
+one, such as a `BIGINT` column or a value, is cast to `INTEGER`.
+
+      private substrArgs(args: List<CommonExpr>): Void {
+        for (var i = 0; i < args.length; i += 1) {
+          if (i > 0) { out.append(", "); }
+          let arg = args[i];
+          let hole = valueHole(arg);
+          if (i == 0 || pgType(arg) == "INTEGER") {
+            write(arg, 0);
+          } else if (hole >= 0) {
+            castValue(hole, "INTEGER");
+          } else {
+            out.append("CAST(");
+            write(arg, 0);
+            out.append(" AS INTEGER)");
           }
         }
-        if (type.isEmpty) { "TEXT" } else { type }
       }
 
 `valueType` is the PostgreSQL type for a value's hole, or null for
@@ -2028,25 +2204,26 @@ the group has a type: when the rest are values, strings, and `NULL`.
         let subject = e.subject;
         if (subject != null) {
           out.append(" ");
-          write(subject, 0);
+          // PostgreSQL reads a subject of unknown type as text.
+          typed(subject, [], 0, "TEXT");
         }
         let thens = e.thens;
         let otherwise = e.otherwise;
         let results = new ListBuilder<CommonExpr>();
         for (let r of thens) { results.add(r); }
         if (otherwise != null) { results.add(otherwise); }
-        let type = groupType(results.toList());
+        let all = results.toList();
         var i = 0;
         for (let w of e.whens) {
           out.append(" WHEN ");
-          write(w, 0);
+          if (subject != null) { typed(w, [subject], 0, "TEXT"); } else { write(w, 0); }
           out.append(" THEN ");
-          groupItem(thens[i], type);
+          typed(thens[i], all, 0, "TEXT");
           i += 1;
         }
         if (otherwise != null) {
           out.append(" ELSE ");
-          groupItem(otherwise, type);
+          typed(otherwise, all, 0, "TEXT");
         }
         out.append(" END");
       }

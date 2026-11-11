@@ -10,7 +10,10 @@ table and column that read back exactly from `information_schema` and
 `pg_catalog`, values bound with `%s` (psycopg's server-side and
 client-side cursors) and `$1` (its raw cursor, which sends the SQL
 unchanged) come back equal with the type asked for, and nested
-queries, operators, and random templates give the expected rows.
+queries, operators, and random templates give the expected rows. The
+common corpus runs once more with every value sent untyped, as text
+of unknown type, as node-postgres (`pg`) sends them, so PostgreSQL
+types each from what's around it.
 Inputs Wherewith rejects (NUL and lone surrogates in strings; empty
 names, NUL, lone surrogates, and names over 63 bytes) must be rejected.
 It also checks that `standard_conforming_strings` is on, as the profile
@@ -36,6 +39,22 @@ import roundtrip as rt
 from roundtrip import H, Style
 
 SCHEMA = "wherewith_roundtrip"
+
+
+def untyped_dumper(psycopg):
+    """A psycopg dumper sending a value as text of unknown type (OID 0),
+    as node-postgres (`pg`) sends every value. psycopg already sends
+    `str` and `None` that way."""
+
+    class Untyped(psycopg.adapt.Dumper):
+        oid = 0
+
+        def dump(self, obj):
+            if isinstance(obj, bool):
+                return b"true" if obj else b"false"
+            return str(obj).encode()
+
+    return Untyped
 
 
 class Postgres(rt.Engine):
@@ -68,10 +87,20 @@ class Postgres(rt.Engine):
                   exact_floats=False),
             Style("dollarNumbered raw", ww.PlaceholderStyle.dollar_numbered, self.runner(psycopg.RawCursor)),
         ]
+        # The common corpus also runs with every value untyped, as `pg`
+        # sends them, which the casts rendering writes must make work.
+        self._corpus_styles = [*self._styles, Style(
+            "dollarNumbered raw, untyped", ww.PlaceholderStyle.dollar_numbered,
+            self.runner(psycopg.RawCursor, untyped=True))]
 
-    def runner(self, cursor_class):
+    def runner(self, cursor_class, untyped=False):
+        dumper = untyped_dumper(self.psycopg) if untyped else None
+
         def run(r, with_description=False):
             cur = cursor_class(self.conn)
+            if dumper:
+                for t in (bool, int, float):
+                    cur.adapters.register_dumper(t, dumper)
             cur.execute(r.sql, [rt.py_value(p) for p in r.params])
             rows = [tuple(row) for row in cur.fetchall()] if cur.description else []
             return (rows, cur.description) if with_description else rows
@@ -97,6 +126,9 @@ class Postgres(rt.Engine):
 
     def styles(self) -> list[Style]:
         return self._styles
+
+    def corpus_styles(self) -> list[Style]:
+        return self._corpus_styles
 
     # Text can't hold NUL, even as a parameter.
     def bindable(self, s: str) -> bool:
@@ -286,6 +318,47 @@ class Postgres(rt.Engine):
             except self.psycopg.Error as err:
                 notes.append(f"{label} fails ({type(err).__name__})")
                 rt.fail("limits", f"{label} failed, not giving {want!r}: {rt.describe(err)} {claim}")
+        # Why common queries cast values in the other places decision 8
+        # names: sent untyped, each gives something other than the
+        # typed value's result, or fails, and with the cast, gives it.
+        # What each gives uncast is recorded, as the design describes it.
+        from decimal import Decimal  # noqa: PLC0415
+
+        claim = "[docs/design.md: decided 8, and the rendering table's `$1` with no context]"
+        for label, uncast, cast, params, want in [
+            ("an untyped value compared with values", "SELECT %s < %s",
+             "SELECT CAST(%s AS BIGINT) < CAST(%s AS BIGINT)", ["10", "9"], False),
+            ("an untyped value beside an integer literal", "SELECT %s + 1",
+             "SELECT CAST(%s AS DOUBLE PRECISION) + 1", ["2.5"], 3.5),
+            ("an untyped value in a list of values", "SELECT %s IN (%s)",
+             "SELECT CAST(%s AS BIGINT) IN (CAST(%s AS DOUBLE PRECISION))", ["1", "1.0"], True),
+            ("an untyped value between values", "SELECT %s BETWEEN %s AND %s",
+             "SELECT CAST(%s AS BIGINT) BETWEEN CAST(%s AS BIGINT) AND CAST(%s AS BIGINT)", ["5", "4", "10"], True),
+            ("an untyped value after -", "SELECT -%s", "SELECT -CAST(%s AS BIGINT)", ["3"], -3),
+            ("an untyped value after +", "SELECT +%s", "SELECT +CAST(%s AS BIGINT)", ["3"], 3),
+            ("an untyped value before IS NULL", "SELECT %s IS NULL", "SELECT CAST(%s AS TEXT) IS NULL", [None], True),
+            ("an untyped value as a CASE subject", "SELECT CASE %s WHEN 1 THEN 'a' END",
+             "SELECT CASE CAST(%s AS BIGINT) WHEN 1 THEN 'a' END", ["1"], "a"),
+            ("an untyped value in ABS", "SELECT abs(%s)", "SELECT abs(CAST(%s AS BIGINT))", ["-3"], 3),
+            ("an untyped value in MIN", "SELECT min(%s)", "SELECT min(CAST(%s AS BIGINT))", ["10"], 10),
+            ("an untyped value in SUM", "SELECT sum(%s)", "SELECT sum(CAST(%s AS BIGINT))", ["2"], Decimal(2)),
+            ("an untyped value in COUNT", "SELECT count(%s)", "SELECT count(CAST(%s AS BIGINT))", ["1"], 1),
+            ("a BIGINT start in SUBSTR", "SELECT substr('abc', CAST(%s AS BIGINT))",
+             "SELECT substr('abc', CAST(CAST(%s AS BIGINT) AS INTEGER))", ["2"], "bc"),
+        ]:
+            try:
+                got = self.execute(uncast, params)[0][0]
+                notes.append(f"{label} gives {got!r}")
+                if got == want and type(got) is type(want) and not label.endswith("COUNT"):
+                    rt.fail("limits", f"{label} gave {got!r}, as with the cast {claim}")
+            except self.psycopg.Error as err:
+                notes.append(f"{label} fails ({type(err).__name__})")
+            try:
+                got = self.execute(cast, params)[0][0]
+                if got != want or type(got) is not type(want):
+                    rt.fail("limits", f"{label}, cast, gave {got!r}, not {want!r} {claim}")
+            except self.psycopg.Error as err:
+                rt.fail("limits", f"{label}, cast, failed, not giving {want!r}: {rt.describe(err)} {claim}")
         rt.count("limits checked", len(notes))
         print("  limits: " + "; ".join(notes))
 

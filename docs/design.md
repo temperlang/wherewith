@@ -646,7 +646,8 @@ would check it, so a value can't land in a quote or comment.
 | `AVG` of integers | float | `numeric` | `DECIMAL` | `DOUBLE` | Document |
 | `SUM` of integers | integer | `numeric` | `DECIMAL` | `HUGEINT` (128 bits) | Document |
 | `-x` of a negative constant integer, such as `-(-1)`, `-(1 - 2)`, or `-${v}` with a negative `v` | integer | integer | MySQL: `DECIMAL`, for any negative constant; MariaDB: `DECIMAL` for an expression like `-(1 - 2)`, but an integer for `-(-1)` and for a value its driver fills in as a literal | integer | Fold: Wherewith negates a constant (integer literals and values, with `+`, `-`, `*`, `%`, signs, `ABS`, and `CAST` to `INTEGER`) itself, writing an integer for literals and binding the result for values, so every database gives an integer; a result past 64 bits, or a float that isn't finite, is refused, and a float zero binds as `0.0` (SQLite negates `0.0` to `0.0`, DuckDB to `-0.0`); `-x` of a column stays as written, an integer everywhere |
-| A `$1` with no context | n/a | sent untyped, read as text (from 10; before, it fails) | n/a | n/a | Cast to the value's type alone in a `SELECT` list, and among `CASE` results or `COALESCE` or `NULLIF` arguments when nothing else there has a type |
+| A `$1` with no context | n/a | sent untyped, read as text (from 10; before, it fails) beside values and strings (`'10' < '9'`), as a literal's type beside one (`$1 + 1` reads `2.5` as a 32-bit `INTEGER`, and fails), and not at all after `-`, before `IS NULL`, or in `SUM` | typed by the driver | n/a | Cast to the value's own type wherever nothing but values and literals is beside it: alone in a `SELECT` list, and in comparisons, arithmetic, `IN` lists, `BETWEEN`, `CASE`, `COALESCE`, and `NULLIF`; and always after a sign, before `IS NULL`, as a simple `CASE`'s subject, and in `ABS`, `MIN`, `MAX`, `SUM`, `AVG`, and `COUNT`. A column, or an expression of the value's type, types it, so it stays bare |
+| `SUBSTR(s, i, n)` | same | takes only 32-bit `i` and `n`, so a `BIGINT` fails | same | same | Cast `i` and `n` to `INTEGER` for PostgreSQL, but for a 32-bit literal or `LENGTH`; past 32 bits, PostgreSQL fails |
 | Subquery in `FROM` | alias optional | required before 16 | required | optional | Grammar requires an alias |
 
 Sources (to recheck, since the container's firewall blocked the
@@ -740,7 +741,8 @@ Rendering, from the [table](#rendering-per-dialect):
 | `x / 0` | Corrected: DuckDB's `/` gives `inf` (`nan` for `0 / 0`) on integers too, and `%` fails only on integers, giving `nan` on floats | Confirmed | Confirmed: as MariaDB |
 | `'a' = 'A'`, trailing spaces | Confirmed | Confirmed, with MariaDB's default collation (`utf8mb4_uca1400_ai_ci`) ignoring accents and trailing spaces | Confirmed: the default collation, `utf8mb4_0900_ai_ci`, ignores case and accents but, being `NO PAD`, not trailing spaces, unlike MariaDB's |
 | Comparison results, `1.5`, `AVG`, and `SUM` | Confirmed | Confirmed | Confirmed: as MariaDB |
-| A `$1` with no context | n/a | Corrected and confirmed: sent untyped, PostgreSQL reads it as text, so a number comes back as text; the casts give values their types, alone and in `COALESCE`, `CASE`, `NULLIF`, and `\|\|` | n/a |
+| A `$1` with no context | Confirmed: the rows and types the cases from "values compared with values" expect | Corrected and confirmed: sent untyped, PostgreSQL reads it as text, so a number comes back as text; the casts give values their types, alone and in `COALESCE`, `CASE`, `NULLIF`, and `\|\|`. Pending CI: the casts in comparisons, `IN` lists, `BETWEEN`, arithmetic, signs, `IS NULL`, a `CASE` subject, and the functions, with values typed and untyped ("values compared with values" and the cases after it), and what PostgreSQL gives without them (the runner's limits) | n/a: PyMySQL fills in each value as a literal of its type, and the binary protocol sends each with its type |
+| `SUBSTR` with a `BIGINT` start or length | Confirmed: taken | Pending CI: PostgreSQL fails without the cast ("SUBSTR from a column and values"), and MariaDB takes it | Pending CI: taken |
 | `-x` of a negative constant integer | Confirmed: integers ("negating a negative literal, type" and the like), and a float zero folded to `0.0` ("negating a zero float value"); past 64 bits, SQLite gives a float and DuckDB a 128-bit integer ("negating the smallest integer") | Folded, pending CI: integers; PostgreSQL fails past 64 bits | Confirmed unfolded for a value PyMySQL fills in (`- -1` is `DECIMAL`, in the runner's nesting cases); folded, pending CI: integers for values, `-(-1)`, and `-(1 - 2)`, and a column staying one; past 64 bits, `DECIMAL`, by MySQL's and MariaDB's source |
 | Subquery in `FROM` | Confirmed: no alias needed | Confirmed: MariaDB needs one; PostgreSQL 18 doesn't | Confirmed: an alias is required (error 1248) |
 
@@ -880,6 +882,17 @@ tests should confirm every one. Details:
   for the server (except its `ClientCursor`); PyMySQL and mysqlclient
   fill in values on the client, so `-%s` with `-1` would be `--1`, a
   comment, and rendering's spaces around holes prevent that.
+- `pg` sends every value as text of unknown type, so PostgreSQL types
+  each from what's beside it, and rendering casts values where nothing
+  would ([decision 8](#the-common-dialect-2026-11-09)); the PostgreSQL
+  runner checks the corpus that way too. Typed drivers send a type
+  with each value, but not always a common one: psycopg sends a small
+  integer as a 16-bit `SMALLINT`. MySQL and MariaDB get each value
+  typed: PyMySQL and mysqlclient fill it in as a literal of its type
+  (a float with an exponent, so it's a `DOUBLE`), and server-side
+  prepared statements' binary protocol sends a type with each value.
+  Only client-side filling is in CI, since PyMySQL has no server-side
+  statements, so the binary protocol's typing is from the manuals.
 - `Microsoft.Data.Sqlite` binds only by name (`@`, `:`, or `$`), and
   an unnamed `?` is an error, so use `atNamed` or `colonNamed`.
 - Npgsql sends `$1` text unchanged when its parameters have no names.
@@ -981,9 +994,13 @@ tests below.
     `information_schema` (and `pg_catalog` for PostgreSQL). PostgreSQL
     binds with `%s` through psycopg's server-side and client-side
     cursors, and with `$1` through its `RawCursor`, which sends the
-    SQL unchanged; it checks that `standard_conforming_strings` is on
-    and records it, and expects names over 63 bytes and NUL anywhere
-    in text to be rejected. MariaDB binds with `%s`, filled in by
+    SQL unchanged, and runs the common corpus again through that
+    cursor with every value sent untyped, as text of unknown type, as
+    node-postgres (`pg`) sends values; it checks that
+    `standard_conforming_strings` is on and records it, records what
+    PostgreSQL gives an untyped value in each position decision 8
+    casts, and expects names over 63 bytes and NUL anywhere in text to
+    be rejected. MariaDB binds with `%s`, filled in by
     PyMySQL on the client, and runs everything in four SQL modes: the
     default, `NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, and both, with the
     matching profile; in the modes without backslash escapes it also
@@ -1041,6 +1058,14 @@ Each has a recommendation, but stays open until decided.
    (`ColumnType` differs the most)? Recommended: start with SQLite's
    column types, defaults, foreign-key actions, functions, and
    operators.
+7. **Float values beside integer columns:** a value beside a column
+   isn't cast ([decision 8](#the-common-dialect-2026-11-09)), so a
+   driver that sends values untyped has PostgreSQL read `${2.5}`
+   beside a `BIGINT` column as a `BIGINT`, which fails, where typed
+   drivers send a `DOUBLE PRECISION` and every database compares the
+   numbers. Cast float values beside columns too? Recommended: yes;
+   typed drivers already send that type, so only untyped ones change,
+   from failing to comparing.
 
 ## Decided
 
@@ -1091,8 +1116,27 @@ closest to standard SQL.
 7. **Expression fragments** (`sql"active AND age > ${n}"`): yes, right
    after statements.
 8. **PostgreSQL parameter types:** casts only where a parameter's type
-   is unknown (the select list, `COALESCE`, `CASE` results, and `||`),
-   checked by the engine tests.
+   is unknown, checked by the engine tests with values sent typed and
+   untyped. Drivers such as `pg` send every value untyped, and
+   PostgreSQL then types it from what's beside it: as text beside only
+   values and strings (`'10' < '9'`), as a literal's type beside one
+   (`$1 + 1` reads `2.5` as a 32-bit `INTEGER`, and fails), and with
+   nothing beside it, as text (alone in the select list) or not at all
+   (`-$1`, `$1 IS NULL`, `SUM($1)`). psycopg's typed binding sends a
+   small integer as a 16-bit `SMALLINT`, which `30000 * 30000`
+   overflows. So a value is cast to its own type wherever nothing but
+   values and literals is beside it: alone in the select list, and in
+   `||`, `COALESCE`, `NULLIF`, `CASE`, comparisons, `IN` lists,
+   `BETWEEN` (whose operand PostgreSQL compares with the low end
+   first), and arithmetic; and always after a sign, before `IS NULL`,
+   as a simple `CASE`'s subject (which PostgreSQL reads as text), and
+   in `ABS`, `MIN`, `MAX`, `SUM`, `AVG`, and `COUNT`. A column beside
+   it, or an expression of its own type (`COUNT(*)` for an integer),
+   types it, so it stays bare, keeping indexes usable. Text functions
+   and `LIKE` read a value as text, and conditions, `LIMIT`,
+   `OFFSET`, `INSERT`, and `SET` type it themselves. MySQL and MariaDB
+   need none of this: their drivers fill in each value as a literal of
+   its type, or send it with its type.
 9. **`UPDATE` and `DELETE` without `WHERE`:** allowed, as SQL does;
    maybe an opt-in check later.
 10. **Collation:** MySQL's case-insensitive comparisons are documented,

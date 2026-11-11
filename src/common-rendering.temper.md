@@ -43,6 +43,7 @@ has the whole table, with what's only documented):
 | `CAST(x AS DOUBLE)` | `REAL` | `DOUBLE PRECISION` | `DOUBLE` | `DOUBLE` |
 | `CAST(x AS TEXT)` | `TEXT` | `TEXT` | `CHAR` | `VARCHAR` |
 | `LENGTH(s)` | `LENGTH` | `LENGTH` | `CHAR_LENGTH` | `LENGTH` |
+| `SUBSTR(s, i, n)` | `SUBSTR` | `SUBSTR`, `i` and `n` cast to `INTEGER` | `SUBSTR` | `SUBSTR` |
 
 `NULL` order follows the [decided rule](../docs/design.md#decided):
 without `NULLS`, nulls sort as the smallest values, as in SQLite and
@@ -58,14 +59,21 @@ names after the column, if there is one, such as `CAST(c AS TEXT)`, so
 rendering writes the column with its table there, `t.c`, as the
 [output names](common-statements.temper.md#output-names) say.
 
-PostgreSQL types a parameter from what's around it, and fails when
-nothing is (with drivers that send values untyped, such as `pg`), so
-values get a cast to their type where nothing else gives one: alone as
-a `SELECT` item, and among `CASE` results or `COALESCE` or `NULLIF`
-arguments that are all values, strings, and `NULL`. Its `||` takes
-text on one side, so each value there is cast to `TEXT`, and so is the
+PostgreSQL types a parameter from what's around it (with drivers that
+send values untyped, such as `pg`): as text beside only values and
+strings (`'10' < '9'`), as a literal's type beside one (a 32-bit
+`INTEGER` for `1`), or not at all, failing. So a value gets a cast to
+its own type wherever nothing but values and literals is beside it:
+alone as a `SELECT` item, and in comparisons, arithmetic, `IN` lists,
+`BETWEEN`, `CASE`, `COALESCE`, and `NULLIF`; and always after a sign,
+before `IS NULL`, as a simple `CASE`'s subject, and in `ABS`, `MIN`,
+`MAX`, `SUM`, `AVG`, and `COUNT`. A column beside it, or an expression
+of its type, types it instead, so it stays bare. Its `||` takes text
+on one side, so each value there is cast to `TEXT`, and so is the
 first operand when neither of the first two is text (`1 || 2` is
-`'12'` everywhere).
+`'12'` everywhere). Its `SUBSTR` takes only 32-bit integers, so a
+start or length that isn't one, such as a `BIGINT` column, is cast to
+`INTEGER`.
 
 After writing, a database's SQL goes through that database's own
 lexer, as a `QueryBuilder` for it would check it, so a value can't land

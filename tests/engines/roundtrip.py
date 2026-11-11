@@ -283,6 +283,11 @@ class Engine:
     def styles(self) -> list[Style]:
         raise NotImplementedError
 
+    def corpus_styles(self) -> list[Style]:
+        """The styles the common corpus runs in: the others, and any
+        that only common queries need to work in."""
+        return self.styles()
+
     # Strings
 
     def rejects_string(self, s: str) -> bool:

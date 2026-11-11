@@ -348,6 +348,72 @@ results or `COALESCE` arguments that are all values, strings, or
       assert(render(sql"SELECT a FROM ${t}", Dialect.mysql, PlaceholderStyle.question) == "SELECT `a` FROM `My Table`");
     }
 
+Everywhere else a value gets its type from what's beside it, so for
+PostgreSQL it's cast unless something there other than a value gives it
+that type: a column, or an expression of its type. Literals don't
+(`5` is a 32-bit `INTEGER`, `2.5` a `NUMERIC`, and `'x'` untyped), nor
+do other values. Where nothing is beside it (a sign, `IS NULL`, `ABS`,
+an aggregate, or a simple `CASE`'s subject), it's always cast.
+`SUBSTR`'s start and length are cast to `INTEGER`, the only type
+PostgreSQL's `SUBSTR` takes.
+
+    test("common rendering types values for PostgreSQL") {
+      let nothing: String? = null;
+      let pg(q: Query): String { render(q, Dialect.postgres, PlaceholderStyle.dollarNumbered) }
+      let compared = sql"SELECT ${1} = ${2} AS a, ${3} < 5 AS b, ${"x"} = 'x' AS c, a = ${4} AS d, ${true} = (a > 0) AS e FROM t";
+      assert(pg(compared) ==
+        "SELECT CAST($1 AS BIGINT) = CAST($2 AS BIGINT) AS \"a\", CAST($3 AS BIGINT) < 5 AS \"b\", CAST($4 AS TEXT) = 'x' AS \"c\", \"a\" = $5 AS \"d\", $6 = (\"a\" > 0) AS \"e\" FROM \"t\"") {
+        pg(compared)
+      }
+      assert(render(compared, Dialect.sqlite, PlaceholderStyle.question) ==
+        "SELECT ? = ? AS \"a\", ? < 5 AS \"b\", ? = 'x' AS \"c\", \"a\" = ? AS \"d\", ? = (\"a\" > 0) AS \"e\" FROM \"t\"");
+      let listed = sql"SELECT a FROM t WHERE ${1} IN (${2}, 3) AND a IN (${4}, ${5}) AND ${6} IN (a, b) AND ${7} IN (a, 8)";
+      assert(pg(listed) ==
+        "SELECT \"a\" FROM \"t\" WHERE CAST($1 AS BIGINT) IN (CAST($2 AS BIGINT), 3) AND \"a\" IN ($3, $4) AND $5 IN (\"a\", \"b\") AND CAST($6 AS BIGINT) IN (\"a\", 8)") {
+        pg(listed)
+      }
+      let arithmetic = sql"SELECT ${1} + ${2} AS a, ${3} * 2 AS b, ${1.5} * 2.0 AS c, a + ${4} AS d, length(b) + ${5} AS e, ${6} % ${7} AS f FROM t";
+      assert(pg(arithmetic) ==
+        "SELECT CAST($1 AS BIGINT) + CAST($2 AS BIGINT) AS \"a\", CAST($3 AS BIGINT) * 2 AS \"b\", CAST($4 AS DOUBLE PRECISION) * 2.0 AS \"c\", \"a\" + $5 AS \"d\", LENGTH(\"b\") + CAST($6 AS BIGINT) AS \"e\", CAST($7 AS BIGINT) % CAST($8 AS BIGINT) AS \"f\" FROM \"t\"") {
+        pg(arithmetic)
+      }
+      let counted = sql"SELECT count(*) + ${1} AS n, count(*) > ${2.5} AS m FROM t";
+      assert(pg(counted) ==
+        "SELECT COUNT(*) + $1 AS \"n\", COUNT(*) > CAST($2 AS DOUBLE PRECISION) AS \"m\" FROM \"t\"") { pg(counted) }
+      let alone = sql"SELECT +${1} AS p, +${1.5} AS q, -${nothing} AS r, abs(${-3}) AS s, min(${1}) AS u, max(${"x"}) AS v, sum(${2}) AS w, avg(${2.5}) AS x, count(${1}) AS y";
+      assert(pg(alone) ==
+        "SELECT +CAST($1 AS BIGINT) AS \"p\", +CAST($2 AS DOUBLE PRECISION) AS \"q\", -CAST($3 AS BIGINT) AS \"r\", ABS(CAST($4 AS BIGINT)) AS \"s\", MIN(CAST($5 AS BIGINT)) AS \"u\", MAX(CAST($6 AS TEXT)) AS \"v\", SUM(CAST($7 AS BIGINT)) AS \"w\", AVG(CAST($8 AS DOUBLE PRECISION)) AS \"x\", COUNT(CAST($9 AS BIGINT)) AS \"y\"") {
+        pg(alone)
+      }
+      let between = sql"SELECT a FROM t WHERE ${1} BETWEEN a AND 9 AND ${2} BETWEEN 1 AND a AND a BETWEEN ${3} AND ${4} AND 0 BETWEEN ${5} AND a";
+      assert(pg(between) ==
+        "SELECT \"a\" FROM \"t\" WHERE $1 BETWEEN \"a\" AND 9 AND CAST($2 AS BIGINT) BETWEEN 1 AND \"a\" AND \"a\" BETWEEN $3 AND $4 AND 0 BETWEEN CAST($5 AS BIGINT) AND \"a\"") {
+        pg(between)
+      }
+      let nulls = sql"SELECT a FROM t WHERE ${nothing} IS NULL OR a = ${5} OR ${1} IS NOT NULL";
+      assert(pg(nulls) == "SELECT \"a\" FROM \"t\" WHERE CAST($1 AS TEXT) IS NULL OR \"a\" = $2 OR CAST($3 AS BIGINT) IS NOT NULL") {
+        pg(nulls)
+      }
+      let cases = sql"SELECT CASE ${1} WHEN 1 THEN 'a' WHEN ${2} THEN 'b' END AS s, CASE a WHEN ${3} THEN ${4} ELSE 0 END AS u, coalesce(${5}, 0) AS v, coalesce(${6}, length(b)) AS w, nullif(${7}, 0) AS x, nullif(a, ${8}) AS y FROM t";
+      assert(pg(cases) ==
+        "SELECT CASE CAST($1 AS BIGINT) WHEN 1 THEN 'a' WHEN CAST($2 AS BIGINT) THEN 'b' END AS \"s\", CASE \"a\" WHEN $3 THEN CAST($4 AS BIGINT) ELSE 0 END AS \"u\", COALESCE(CAST($5 AS BIGINT), 0) AS \"v\", COALESCE(CAST($6 AS BIGINT), LENGTH(\"b\")) AS \"w\", NULLIF(CAST($7 AS BIGINT), 0) AS \"x\", NULLIF(\"a\", $8) AS \"y\" FROM \"t\"") {
+        pg(cases)
+      }
+      // Typed by an expression of their own type, values stay bare.
+      let same = sql"SELECT coalesce(${1}, count(*)) AS n, ${"x"} || '' = lower(${"Y"}) AS m, ${2} = CAST(${"2"} AS INTEGER) AS o FROM t";
+      assert(pg(same) ==
+        "SELECT COALESCE($1, COUNT(*)) AS \"n\", (CAST($2 AS TEXT) || '') = LOWER($3) AS \"m\", $4 = CAST($5 AS BIGINT) AS \"o\" FROM \"t\"") {
+        pg(same)
+      }
+      let cut = sql"SELECT substr(b, a) AS s, substr(b, ${2}, length(b)) AS u, substr(b, 2, 3) AS v FROM t";
+      assert(pg(cut) ==
+        "SELECT SUBSTR(\"b\", CAST(\"a\" AS INTEGER)) AS \"s\", SUBSTR(\"b\", CAST($1 AS INTEGER), LENGTH(\"b\")) AS \"u\", SUBSTR(\"b\", 2, 3) AS \"v\" FROM \"t\"") {
+        pg(cut)
+      }
+      assert(render(cut, Dialect.duckdb, PlaceholderStyle.dollarNumbered) ==
+        "SELECT SUBSTR(\"b\", \"a\") AS \"s\", SUBSTR(\"b\", $1, LENGTH(\"b\")) AS \"u\", SUBSTR(\"b\", 2, 3) AS \"v\" FROM \"t\"");
+    }
+
 ## Constants
 
 The negation of a [constant](common-expressions.temper.md#constants)

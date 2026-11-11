@@ -245,6 +245,53 @@ CASES = [
       claim="rendering table, `-x` of a negative constant (a float zero)"),
     C("NULLIF of values", "SELECT nullif(", H(1), ", ", H(2), ") AS n", rows=[(1,)],
       claim="decided 8: values cast where their type is unknown (NULLIF)"),
+    # Where nothing but values and literals types a value, PostgreSQL
+    # reads one sent untyped as text ('10' < '9'), as a literal's type
+    # (a 32-bit INTEGER for 1, so 2.5 or 3000000000 fails), or not at
+    # all; rendering casts it to its own type. The PostgreSQL runner
+    # runs these untyped too, and psycopg's typed binding sends small
+    # integers as 16-bit SMALLINTs, so 30000 * 30000 would overflow.
+    C("values compared with values", "SELECT ", H(10), " < ", H(9), " AS a, ", H(10), " = ", H(10), " AS b, ",
+      H("b"), " > ", H("a"), " AS c", rows=[(0, 1, 1)],
+      claim="decided 8: values cast where their type is unknown (comparisons)"),
+    C("values compared with literals", "SELECT ", H(10), " > 9 AS a, ", H(2.5), " > 2 AS b, ", H(3000000000),
+      " > 1 AS c", rows=[(1, 1, 1)],
+      claim="decided 8: values cast where their type is unknown (beside literals)"),
+    C("values in a list of values", "SELECT ", H(10), " IN (", H(9), ", ", H(10), ") AS a, ", H(1), " IN (",
+      H(1.0), ") AS b, ", H(5), " IN (1, 5) AS c", rows=[(1, 1, 1)],
+      claim="decided 8: values cast where their type is unknown (IN lists)"),
+    C("values between values", "SELECT ", H(5), " BETWEEN ", H(4), " AND ", H(10), " AS a, ", H(2.5),
+      " BETWEEN 2 AND 3 AS b", rows=[(1, 1)],
+      claim="decided 8: values cast where their type is unknown (BETWEEN)"),
+    C("arithmetic on values", "SELECT ", H(1), " + ", H(2), " AS a, ", H(2.5), " * 2 AS b, ", H(7), " % ", H(4),
+      " AS c, ", H(30000), " * ", H(30000), " AS d", rows=[(3, 5.0, 3, 900000000)],
+      claim="decided 8: values cast where their type is unknown (arithmetic)"),
+    C("arithmetic on values, type", "SELECT ", H(1), " + ", H(2), " AS a", rows=Raw(("int",)),
+      claim="decided 8: values cast where their type is unknown (arithmetic)"),
+    C("a value beside a function's type", "SELECT length(name) + ", H(0.5), " FROM people WHERE id = 5",
+      rows=[(4.5,)], claim="decided 8: values cast where their type is unknown (beside a 32-bit INTEGER)"),
+    C("signs before values", "SELECT +", H(3), " AS a, +", H(-2.5), " AS b, -", H(NOTHING), " AS c",
+      rows=[(3, -2.5, None)], claim="decided 8: values cast where their type is unknown (signs)"),
+    C("a sign before a value, type", "SELECT +", H(3), " AS a", rows=Raw(("int",)),
+      claim="decided 8: values cast where their type is unknown (signs)"),
+    C("values in functions", "SELECT abs(", H(-3), ") AS a, min(", H(10), ") AS b, max(", H("x"), ") AS c, sum(",
+      H(2), ") AS d, avg(", H(2.5), ") AS e, count(", H(1), ") AS f", rows=[(3, 10, "x", 2, 2.5, 1)],
+      claim="decided 8: values cast where their type is unknown (ABS, MIN, MAX, SUM, AVG, and COUNT)"),
+    C("values in functions, type", "SELECT abs(", H(-3), ") AS a, min(", H(10), ") AS b, max(", H(10), ") AS c",
+      rows=Raw(("int", "int", "int")),
+      claim="decided 8: values cast where their type is unknown (ABS, MIN, and MAX)"),
+    C("a value and IS NULL", "SELECT ", H(NOTHING), " IS NULL AS a, ", H(1), " IS NOT NULL AS b", rows=[(1, 1)],
+      claim="decided 8: values cast where their type is unknown (IS NULL)"),
+    C("a value as a CASE subject", "SELECT CASE ", H(2), " WHEN 1 THEN 'one' WHEN ", H(2), " THEN 'two' END AS a",
+      rows=[("two",)], claim="decided 8: values cast where their type is unknown (a CASE subject)"),
+    C("values beside literals in COALESCE and NULLIF", "SELECT coalesce(", H(2.5), ", 0) AS a, nullif(",
+      H(3000000000), ", 0) AS b", rows=[(2.5, 3000000000)],
+      claim="decided 8: values cast where their type is unknown (beside literals)"),
+    # PostgreSQL's SUBSTR takes only 32-bit integers, so rendering casts
+    # a start or length that isn't one, such as a BIGINT column.
+    C("SUBSTR from a column and values", "SELECT substr(name, id), substr(name, ", H(2), ", ", H(3),
+      ") FROM people WHERE id = 1", rows=[("alice", "lic")],
+      claim="rendering table, `SUBSTR(s, i, n)`: PostgreSQL's takes only 32-bit integers"),
     C("collation and accents", "SELECT id FROM people WHERE name = 'emile'", rows=[], mariadb=[(4,)],
       mysql=[(4,)], claim="rendering table, `'a' = 'A'`: MariaDB's and MySQL's default collations ignore"
                           " accents too"),
@@ -507,13 +554,13 @@ def matches(got, want) -> bool:
 def usable(e, q, style_index: int) -> bool:
     """Whether q renders in a style: named styles refuse text holding
     their marker, by design."""
-    return q.render_problem(e.dialect, e.styles()[style_index].style) is None
+    return q.render_problem(e.dialect, e.corpus_styles()[style_index].style) is None
 
 
 def run(e, q, style_index: int = 0):
     """Renders q for the engine and runs it in its first style (or
     another), giving the rows, or ERROR if the engine refuses it."""
-    st = e.styles()[style_index]
+    st = e.corpus_styles()[style_index]
     r = q.render(e.dialect, st.style)
     try:
         return [tuple(row) for row in st.run(r)]
@@ -536,7 +583,7 @@ def setup(e) -> None:
                    H(row[5]), ")")
         got = run(e, q)
         if got == ERROR:
-            rt.fail("corpus", f"inserting {row!r} failed: {q.render(e.dialect, e.styles()[0].style).sql!r}"
+            rt.fail("corpus", f"inserting {row!r} failed: {q.render(e.dialect, e.corpus_styles()[0].style).sql!r}"
                     f" gave {got!r}")
     for row in PETS:
         run(e, common("INSERT INTO pets (owner, kind) VALUES (", H(row[0]), ", ", H(row[1]), ")"))
@@ -574,14 +621,14 @@ def check_case(e, case: Case) -> None:
     except Exception as err:  # noqa: BLE001
         rt.fail("corpus", f"{case.name}: the common query doesn't build ({rt.describe(err)}){claimed(case)}")
         return
-    for i in range(len(e.styles())):
+    for i in range(len(e.corpus_styles())):
         if not usable(e, q, i):
             rt.count("corpus styles refused by design")
             continue
         got = run(e, q, i)
         if not matches(got, want):
-            sql = q.render(e.dialect, e.styles()[i].style).sql
-            rt.fail("corpus", f"{case.name} ({e.styles()[i].name}): {sql!r} gave {got!r}, not {want!r}"
+            sql = q.render(e.dialect, e.corpus_styles()[i].style).sql
+            rt.fail("corpus", f"{case.name} ({e.corpus_styles()[i].name}): {sql!r} gave {got!r}, not {want!r}"
                     f"{claimed(case)}")
     if name in case.differs:
         if matches(run(e, q), case.rows):
@@ -618,7 +665,7 @@ def check(e, seed: int, n: int) -> None:
             q = common(*pieces)
             got = run(e, q)
             if got == ERROR:
-                rt.fail("corpus", f"{q.render(e.dialect, e.styles()[0].style).sql!r} gave {got!r}")
+                rt.fail("corpus", f"{q.render(e.dialect, e.corpus_styles()[0].style).sql!r} gave {got!r}")
         got = run(e, common("SELECT id, v FROM scratch ORDER BY id"))
         if not matches(got, WRITTEN):
             rt.fail("corpus", f"after the writes, scratch has {got!r}, not {WRITTEN!r}")
@@ -717,10 +764,10 @@ def check_random(e, seed: int, n: int) -> None:
             continue
         rt.count("corpus random")
         want = ref.rows(q)
-        st = rng.randrange(len(e.styles()))
+        st = rng.randrange(len(e.corpus_styles()))
         if not usable(e, q, st):
             st = 0
         got = run(e, q, st)
         if not matches(got, want):
-            sql = q.render(e.dialect, e.styles()[st].style).sql
+            sql = q.render(e.dialect, e.corpus_styles()[st].style).sql
             rt.fail("corpus random", f"{sql!r} gave {got!r}, not SQLite's {want!r}")
