@@ -76,6 +76,10 @@ class Sqlite(rt.Engine):
     def execute(self, sql: str, params=()) -> list[tuple]:
         return self.conn.execute(sql, params).fetchall()
 
+    def execute_described(self, sql: str):
+        cur = self.conn.execute(sql)
+        return cur.fetchall(), cur.description
+
     def styles(self) -> list[Style]:
         return self._styles
 

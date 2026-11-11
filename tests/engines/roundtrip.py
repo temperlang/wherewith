@@ -340,6 +340,14 @@ class Engine:
     def result_name(self, description) -> str:
         return description[0][0]
 
+    def result_names(self, description) -> list[str]:
+        return [d[0] for d in description]
+
+    def execute_described(self, sql: str) -> tuple[list[tuple], object]:
+        """Runs SQL as written, giving its rows and the cursor's
+        description."""
+        raise NotImplementedError
+
     # Parameters
 
     def param_values(self, strings: list[str]) -> list:

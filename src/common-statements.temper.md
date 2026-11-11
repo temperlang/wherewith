@@ -689,6 +689,11 @@ For every target:
   which PostgreSQL reads as two names and the others as one, but for
   MySQL's table names, which follow a setting; see
   [names in two cases](#names-in-two-cases).
+- **Names from text:** in the outermost query, the name rendering
+  gives an item that's neither a column nor aliased (see
+  [output names](#output-names)) when it's too long for a target
+  (PostgreSQL would cut it short at 63 bytes), when another item has
+  it, or when the query reads it outside its subqueries.
 
 Names match without regard to ASCII case, since MySQL matches column
 names and aliases that way.
@@ -713,16 +718,23 @@ For MySQL and MariaDB (either profile):
 For PostgreSQL, a name alone in `ORDER BY` that it would read
 differently, by its [output names](#output-names): an alias that
 another item is named too, and a column, where an item is named after
-it, in a query whose column it can't qualify.
+it, in a subquery or a query after `INSERT` whose column it can't
+qualify.
 
 The checker walks a statement once, through the expression checker,
 which holds the holes and targets.
 
     class StatementChecker(private c: CommonChecker) {
+      // Whether the next `SELECT` checked is the outermost statement,
+      // whose unaliased items rendering names after their text.
+      private var outer: Boolean = false;
 
       public statement(s: CommonStatement): Void throws Bubble {
         when (s) {
-          is SelectStatement -> do { select(s); };
+          is SelectStatement -> do {
+            outer = true;
+            select(s);
+          };
           is InsertStatement -> insert(s);
           is UpdateStatement -> update(s);
           is DeleteStatement -> deleteFrom(s);
@@ -769,6 +781,8 @@ the query it's in. `inSubquery` adds what `IN` refuses.
 ### SELECT
 
       private select(s: SelectStatement): Int throws Bubble {
+        let named = outer;
+        outer = false;
         let items = s.items;
         var kind = kindUnknown;
         for (var i = 0; i < items.length; i += 1) {
@@ -799,7 +813,8 @@ the query it's in. `inSubquery` adds what `IN` refuses.
         count(s.limit, "LIMIT");
         count(s.offset, "OFFSET");
         places(s);
-        aliases(s);
+        if (named) { itemNames(s); }
+        aliases(s, named);
         grouping(s);
         distinctOrder(s);
         kind
@@ -982,7 +997,7 @@ Aliases, outside `ORDER BY` or inside its expressions, where an alias
 that names something other than its own column could be read as
 either.
 
-      private aliases(s: SelectStatement): Void throws Bubble {
+      private aliases(s: SelectStatement, named: Boolean): Void throws Bubble {
         let items = s.items;
         // Each alias that names something else, folded.
         let others = new ListBuilder<String>();
@@ -1009,7 +1024,7 @@ either.
           let e = o.expr;
           if (isBareColumn(e)) {
             orderAlias(s, e);
-            if (e is ColumnExpr) { outputNames(s, e); }
+            if (e is ColumnExpr) { outputNames(s, e, named); }
           } else {
             aliasRefs(e, others, "ORDER BY");
           }
@@ -1086,11 +1101,11 @@ by its [output names](#output-names). Rendering qualifies a column for
 PostgreSQL where it can: in a query with one source and no outer
 query, whose columns a bare name could be.
 
-      private outputNames(s: SelectStatement, e: ColumnExpr): Void throws Bubble {
+      private outputNames(s: SelectStatement, e: ColumnExpr, named: Boolean): Void throws Bubble {
         let names = new OutputNames(c.lexer, c.holes);
         let name = canonicalName(c.nameText(e.column));
         if (postgres()) {
-          let clash = names.postgresClash(s, e);
+          let clash = names.postgresClash(s, e, named);
           if (clash == clashAlias) {
             c.fail("ORDER BY ${name} is ambiguous for postgres, which names another SELECT item ${name} too; rename the alias", e.at);
           } else if (clash == clashColumn && !canQualify(s)) {
@@ -1116,6 +1131,85 @@ query, whose columns a bare name could be.
           }
         }
         false
+      }
+
+In the outermost query, rendering names each unaliased item that
+isn't a column after its text, as [output names](#output-names) says.
+That name must suit every target, isn't another item's, and isn't read
+anywhere else in the query: `WHERE`, `ON`, `GROUP BY`, `HAVING`, or
+`ORDER BY`, where some databases would read the item and others a
+column, or fail. Each refusal asks for an `AS`.
+
+      private itemNames(s: SelectStatement): Void throws Bubble {
+        let items = s.items;
+        // Each item's name from its text, or "".
+        let names = new ListBuilder<String>();
+        // Each item's output name, folded, or "" for `*`.
+        let outputs = new ListBuilder<String>();
+        for (let item of items) {
+          let name = generatedName(c.lexer, c.holes, item);
+          names.add(name);
+          let alias = item.alias;
+          let e = item.expr;
+          let output = if (alias != null) {
+            c.nameText(alias)
+          } else if (e is ColumnExpr) {
+            c.nameText(e.column)
+          } else {
+            name
+          };
+          outputs.add(folded(output));
+          if (!name.isEmpty) {
+            for (let d of c.targets) {
+              let problem = d.nameProblem(name);
+              if (problem != null) {
+                c.fail("SELECT item named ${canonicalName(name)} after its text: ${problem} for ${d.name}; name it with AS", item.at);
+              }
+            }
+          }
+        }
+        let generated = new ListBuilder<String>();
+        for (var i = 0; i < items.length; i += 1) {
+          let name = names[i];
+          if (!name.isEmpty) {
+            for (var j = 0; j < items.length; j += 1) {
+              if (j != i && outputs[j] == outputs[i]) {
+                c.fail("SELECT item named ${canonicalName(name)} after its text, as another item is named; name it with AS", items[i].at);
+              }
+            }
+            generated.add(outputs[i]);
+          }
+        }
+        if (generated.isEmpty) { return; }
+        let read = generated.toList();
+        let filter = s.filter;
+        if (filter != null) { itemNameRefs(filter, read); }
+        for (let join of s.joins) {
+          let condition = join.condition;
+          if (condition != null) { itemNameRefs(condition, read); }
+        }
+        for (let g of s.groups) { itemNameRefs(g, read); }
+        let having = s.having;
+        if (having != null) { itemNameRefs(having, read); }
+        for (let o of s.orders) { itemNameRefs(o.expr, read); }
+      }
+
+      private itemNameRefs(e: CommonExpr, names: List<String>): Void throws Bubble {
+        if (e is ColumnExpr) {
+          if (e.table == null) {
+            let text = c.nameText(e.column);
+            let name = folded(text);
+            for (let n of names) {
+              if (n == name) {
+                c.fail("${canonicalName(text)} is the name a SELECT item gets from its text; name that item with AS", e.at);
+              }
+            }
+          }
+          return;
+        }
+        if (e is SubqueryExpr) { return; }
+        let children = exprChildren(e);
+        for (let child of children) { itemNameRefs(child, names); }
       }
 
 Grouping: in a query that groups or aggregates, every column outside
@@ -1625,8 +1719,23 @@ does.
 
 ## Output names
 
-Every `SELECT` item has an output name, and a name alone in `ORDER BY`
-can mean one, but the databases name items differently. SQLite and
+Every `SELECT` item has an output name, which code reads columns by,
+and a name alone in `ORDER BY` can mean one, but the databases name
+unaliased expressions differently: `SELECT count(*)` names its column
+`count(*)` in SQLite, `count` in PostgreSQL, `COUNT(*)` in MySQL (the
+text it was sent), and `count_star()` in DuckDB. So in the outermost
+query, rendering names each item that's neither a column nor aliased
+after its text: its canonical common SQL, with ASCII letters outside
+quotes in lowercase and each value written `${…}`, as errors write
+holes, so `count(*)`, `a + 1`, `lower("Name")`, and `${…} + 1`. A
+column, `c` or `t.c`, is named `c` everywhere, so it keeps its name.
+The checks refuse such a name where it's too long, another item's, or
+read elsewhere in the query, asking for an `AS`. A subquery's items
+aren't named, since nothing reads them by name (a subquery in `FROM`
+needs an alias for each expression), and neither are those of a query
+after `INSERT`.
+
+Elsewhere, then, the databases' own names still count. SQLite and
 DuckDB match only an alias there, and otherwise read a column, so they
 read it as the common dialect does. PostgreSQL matches an unaliased
 item too, by the name it gives it, which can be a column's:
@@ -1644,12 +1753,12 @@ item too, by the name it gives it, which can be a column's:
   versions name them, which wrote them as casts;
 - anything else, such as an operator, is `?column?`.
 
-So `SELECT id, CAST(id AS DOUBLE) … ORDER BY id` has two items named
-`id`, which PostgreSQL refuses as ambiguous, and `SELECT CAST(score AS
-TEXT) … ORDER BY score` sorts by text there. Rendering for PostgreSQL
-writes such a column with its source's name, `people.id`, which always
-means the column. Items that are the same column don't count, since
-PostgreSQL takes those as one.
+So, unnamed, `SELECT id, CAST(id AS DOUBLE) … ORDER BY id` has two
+items named `id`, which PostgreSQL refuses as ambiguous, and `SELECT
+CAST(score AS TEXT) … ORDER BY score` sorts by text there. Rendering
+for PostgreSQL writes such a column with its source's name,
+`people.id`, which always means the column. Items that are the same
+column don't count, since PostgreSQL takes those as one.
 
 Where the common dialect reads an alias, another item of that name
 makes PostgreSQL refuse it as ambiguous: `SELECT id, score AS id …
@@ -1678,16 +1787,19 @@ the lexer's text and the holes' names and values.
 `ORDER BY` differently: `clashColumn` for a column, where it would read
 an item named after it, and `clashAlias` for an alias, where another
 item has its name; `clashNone` if it reads it as the common dialect
-does.
+does. With `named`, for the outermost query, its unaliased expressions
+are named after their text, which the checks keep out of `ORDER BY`.
 
-      public postgresClash(s: SelectStatement, e: ColumnExpr): Int {
+      public postgresClash(s: SelectStatement, e: ColumnExpr, named: Boolean): Int {
         if (e.table != null) { return clashNone; }
         let name = nameText(e.column);
         let aliased = aliasedItem(s, name, false);
         let items = s.items;
         for (let item of items) {
           let x = item.expr;
-          if (item.alias == null) {
+          // In the outermost query, rendering names an expression
+          // after its text, which the checks keep out of ORDER BY.
+          if (item.alias == null && (!named || x is ColumnExpr)) {
             if (x != null) {
               let output = postgresName(x);
               if (output == name || output.isEmpty) {
@@ -1875,6 +1987,48 @@ with `bool` after them for a value's boolean.
 
     let postgresTypeNames: List<String> = ["", "int8", "float8", "text", "bool"];
 
+`generatedName` is the name rendering gives an item of the outermost
+query that has no alias and isn't a column: its canonical common SQL,
+with ASCII letters outside quotes in lowercase and each value written
+`${…}`, as errors write holes; or "" for any other item.
+
+    let generatedName(lexer: CommonLexer, holes: List<QueryPart>, item: SelectItem): String {
+      let e = item.expr;
+      if (item.alias != null || e is ColumnExpr) { return ""; }
+      if (e == null) { return ""; }
+      let printer = new CommonPrinter(lexer, false);
+      printer.values = holes;
+      let printed = printer.print(e ?? panic());
+      let text = new StringBuilder();
+      let runs = printed.runs;
+      for (var i = 0; i < runs.length; i += 1) {
+        text.append(runs[i]);
+        if (i < printed.holes.length) {
+          let hole = printed.holes[i];
+          let part = if (hole < holes.length) { holes[hole] } else { null };
+          if (part is QueryName) {
+            text.append(canonicalName(part.name.name));
+          } else {
+            text.append("\${…}");
+          }
+        }
+      }
+      let written = text.toString();
+      let out = new StringBuilder();
+      var quote = 0;
+      for (var i = String.begin; written.hasIndex(i); i = written.next(i)) {
+        let ch = written[i];
+        if (quote == 0) {
+          if (ch == char'"' || ch == char'\'') { quote = ch; }
+          out.appendCodePoint(lowercased(ch)) orelse panic();
+        } else {
+          if (ch == quote) { quote = 0; }
+          out.appendCodePoint(ch) orelse panic();
+        }
+      }
+      out.toString()
+    }
+
 ## Printing
 
 The statement printer writes through an expression
@@ -1885,10 +2039,15 @@ put them. For a target database, it writes `NULLS` and `OFFSET` as
 [rendering](common-rendering.temper.md) says.
 
     class StatementPrinter(private p: CommonPrinter) {
+      // Whether the next `SELECT` written is the outermost statement.
+      private var outer: Boolean = false;
 
       public statement(s: CommonStatement): Void {
         when (s) {
-          is SelectStatement -> select(s);
+          is SelectStatement -> do {
+            outer = true;
+            select(s);
+          };
           is InsertStatement -> insert(s);
           is UpdateStatement -> update(s);
           is DeleteStatement -> deleteFrom(s);
@@ -1896,6 +2055,8 @@ put them. For a target database, it writes `NULLS` and `OFFSET` as
       }
 
       public select(s: SelectStatement): Void {
+        let named = outer && p.target != null;
+        outer = false;
         p.text(if (s.distinct) { "SELECT DISTINCT " } else { "SELECT " });
         var first = true;
         for (let item of s.items) {
@@ -1905,6 +2066,13 @@ put them. For a target database, it writes `NULLS` and `OFFSET` as
           if (e != null) {
             p.item(e);
             alias(item.alias);
+            if (named) {
+              let name = generatedName(p.lexer, p.values, item);
+              if (!name.isEmpty) {
+                p.text(" AS ");
+                p.nameValue(name);
+              }
+            }
           } else {
             let table = item.table;
             if (table != null) {
@@ -1941,7 +2109,7 @@ put them. For a target database, it writes `NULLS` and `OFFSET` as
           for (let o of s.orders) {
             if (!firstOrder) { p.text(", "); }
             firstOrder = false;
-            order(s, o);
+            order(s, o, named);
           }
         }
         let t = p.target;
@@ -1956,7 +2124,7 @@ An `ORDER BY` item, with `NULLS` written where the database's own
 order differs from the rule's, and on MySQL, which has no `NULLS`,
 `x IS NULL` before it instead, where its order differs.
 
-      private order(s: SelectStatement, o: OrderItem): Void {
+      private order(s: SelectStatement, o: OrderItem, named: Boolean): Void {
         let t = p.target;
         let nulls = if (t != null) { t.nulls } else { nullsSmallest };
         let differs = if (nulls == nullsLargest) {
@@ -1975,7 +2143,7 @@ order differs from the rule's, and on MySQL, which has no `NULLS`,
             p.fail("NULLS FIRST or LAST on the place of a * in ORDER BY, for mysql");
           }
         }
-        let qualifier = postgresQualifier(s, o.expr);
+        let qualifier = postgresQualifier(s, o.expr, named);
         if (qualifier != null) {
           p.name(qualifier);
           p.text(".");
@@ -1992,12 +2160,12 @@ column in `ORDER BY` for PostgreSQL, where it would otherwise read an
 item named after the column, or null. The checks refuse such a column
 where the query's only source can't be the table.
 
-      private postgresQualifier(s: SelectStatement, e: CommonExpr): CommonName? {
+      private postgresQualifier(s: SelectStatement, e: CommonExpr, named: Boolean): CommonName? {
         let t = p.target;
         if (t == null || lexingName(t.dialect) != "postgres") { return null; }
         if (!(e is ColumnExpr) || p.subqueries > 0 || !s.joins.isEmpty) { return null; }
         if (e is ColumnExpr) {
-          if (new OutputNames(p.lexer, p.values).postgresClash(s, e) != clashColumn) { return null; }
+          if (new OutputNames(p.lexer, p.values).postgresClash(s, e, named) != clashColumn) { return null; }
         }
         let source = s.source;
         if (source is TableSource) {

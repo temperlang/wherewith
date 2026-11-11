@@ -124,6 +124,10 @@ class Postgres(rt.Engine):
         cur = self.conn.execute(sql, list(params) if params else None)
         return [tuple(row) for row in cur.fetchall()] if cur.description else []
 
+    def execute_described(self, sql: str):
+        cur = self.conn.execute(sql)
+        return [tuple(row) for row in cur.fetchall()], cur.description
+
     def styles(self) -> list[Style]:
         return self._styles
 
@@ -169,6 +173,9 @@ class Postgres(rt.Engine):
 
     def result_name(self, description) -> str:
         return description[0].name
+
+    def result_names(self, description) -> list[str]:
+        return [d.name for d in description]
 
     def nul_texts(self) -> list[str]:
         return []

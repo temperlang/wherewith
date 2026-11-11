@@ -102,6 +102,11 @@ class Mariadb(rt.Engine):
             cur.execute(sql, list(params) if params else None)
             return [tuple(row) for row in cur.fetchall()] if cur.description else []
 
+    def execute_described(self, sql: str):
+        with self.conn.cursor() as cur:
+            cur.execute(sql)
+            return [tuple(row) for row in cur.fetchall()], cur.description
+
     def styles(self) -> list[Style]:
         return self._styles
 

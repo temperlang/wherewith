@@ -83,6 +83,10 @@ class Duckdb(rt.Engine):
         cur = self.conn.execute(sql, list(params))
         return cur.fetchall() if cur.description else []
 
+    def execute_described(self, sql: str):
+        cur = self.conn.execute(sql)
+        return cur.fetchall(), cur.description
+
     def styles(self) -> list[Style]:
         return self._styles
 

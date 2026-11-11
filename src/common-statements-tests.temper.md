@@ -366,7 +366,8 @@ as another item, by the names they give items: an alias beside an
 item PostgreSQL names the same, or, for MySQL, beside a column of that
 name; and, for PostgreSQL, a column where an item is named after it,
 in a query with joins or inside an expression, where rendering can't
-qualify it.
+qualify it. In the outermost query, rendering names expressions after
+their text, so only plain columns and aliases clash there.
 
     test("common output names in ORDER BY") {
       let both = [
@@ -374,11 +375,17 @@ qualify it.
         new Pair("SELECT b AS a, t.a FROM t ORDER BY a DESC", new Pair(pgAmbiguous("a"), 36)),
       ];
       let pgOnly = [
-        new Pair("SELECT CAST(a AS TEXT), b + 0 AS a FROM t ORDER BY a", new Pair(pgAmbiguous("a"), 52)),
-        new Pair("SELECT length(b), c AS length FROM t ORDER BY length", new Pair(pgAmbiguous("\"length\""), 47)),
         new Pair(
-          "SELECT t.a, CAST(t.a AS TEXT) FROM t JOIN u ON t.a = u.a ORDER BY a",
-          new Pair(pgItem("a"), 67),
+          "SELECT a FROM t WHERE EXISTS (SELECT CAST(a AS TEXT), b + 0 AS a FROM u ORDER BY a)",
+          new Pair(pgAmbiguous("a"), 82),
+        ),
+        new Pair(
+          "SELECT a FROM t WHERE EXISTS (SELECT length(b), c AS length FROM u ORDER BY length)",
+          new Pair(pgAmbiguous("\"length\""), 77),
+        ),
+        new Pair(
+          "SELECT a FROM t WHERE EXISTS (SELECT u.a, CAST(u.a AS TEXT) FROM u JOIN v ON u.a = v.a ORDER BY a)",
+          new Pair(pgItem("a"), 97),
         ),
         new Pair(
           "SELECT a FROM t WHERE EXISTS (SELECT b, CAST(b AS TEXT) FROM u ORDER BY b)",
@@ -409,6 +416,11 @@ qualify it.
         "SELECT b AS a, c + 1 AS a2 FROM t ORDER BY a",
         "SELECT a FROM t WHERE EXISTS (SELECT b, CAST(c AS TEXT) FROM u ORDER BY b)",
         "SELECT a, CAST(a AS TEXT) FROM t ORDER BY a",
+        // In the outermost query, rendering names expressions after
+        // their text, so PostgreSQL reads these as the others do.
+        "SELECT CAST(a AS TEXT), b + 0 AS a FROM t ORDER BY a",
+        "SELECT length(b), c AS length FROM t ORDER BY length",
+        "SELECT t.a, CAST(t.a AS TEXT) FROM t JOIN u ON t.a = u.a ORDER BY a",
       ];
       for (let text of passes) {
         let got = canon(text);
@@ -433,6 +445,63 @@ qualify it.
     }
 
     let notPostgres(): List<Dialect> { [Dialect.sqlite, Dialect.mysql, Dialect.duckdb] }
+
+## Names from text
+
+In the outermost query, rendering names an unaliased expression after
+its text. That name must fit every target, can't be another item's,
+and can't be read elsewhere in the query; each refusal asks for an
+`AS`. Subqueries and queries after `INSERT` aren't named.
+
+    test("common statement names from text") {
+      let longItem = "coalesce(nickname, given_name, family_name, 'someone we never met')";
+      let long = "SELECT ${longItem} FROM people";
+      let item64 = "coalesce(nick, '${repeated("a", 46)}')";
+      let at64 = "SELECT ${item64} FROM people";
+      let found = mismatches([
+        new Pair(long, new Pair(longName(longItem, "name longer than 63 UTF-8 bytes for postgres"), 8)),
+        new Pair(at64, new Pair(longName(item64, "name longer than 63 UTF-8 bytes for postgres"), 8)),
+        new Pair("SELECT a + 1 FROM t WHERE \"a + 1\" > 2", new Pair(readName("\"a + 1\""), 27)),
+        new Pair("SELECT a + 1 FROM t JOIN u ON \"a + 1\" = u.b", new Pair(readName("\"a + 1\""), 31)),
+        new Pair("SELECT a + 1, count(*) FROM t GROUP BY \"a + 1\"", new Pair(readName("\"a + 1\""), 40)),
+        new Pair("SELECT a, count(*) FROM t GROUP BY a HAVING \"count(*)\" > 1", new Pair(readName("\"count(*)\""), 45)),
+        new Pair("SELECT a + 1 FROM t ORDER BY \"a + 1\"", new Pair(readName("\"a + 1\""), 30)),
+        new Pair("SELECT a + 1 FROM t ORDER BY \"A + 1\" DESC", new Pair(readName("\"A + 1\""), 30)),
+        new Pair("SELECT a + 1 FROM t ORDER BY -\"a + 1\"", new Pair(readName("\"a + 1\""), 31)),
+        new Pair("SELECT count(*), count(*) FROM t", new Pair(namedTwice("\"count(*)\""), 8)),
+        new Pair("SELECT b AS \"lower(a)\", lower(a) FROM t", new Pair(namedTwice("\"lower(a)\""), 25)),
+        new Pair("SELECT \"LOWER(A)\", lower(a) FROM t", new Pair(namedTwice("\"lower(a)\""), 20)),
+      ], commonTargets());
+      assert(found == "") { found }
+      assert(narrowed([Dialect.mysql], long) == placed(long, longName(longItem, "name longer than 64 characters for mysql"), 8));
+      // Fine: where no target limits names, where the item has an
+      // alias, where the name is qualified, and where nothing's named.
+      assert(narrowed([Dialect.mysql, Dialect.sqlite, Dialect.duckdb], at64) == parsed(at64, false));
+      assert(narrowed([Dialect.sqlite, Dialect.duckdb], long) == parsed(long, false));
+      let passes = [
+        "SELECT a + 1 AS \"a + 1\" FROM t ORDER BY \"a + 1\"",
+        "SELECT a + 1 FROM t ORDER BY t.\"a + 1\"",
+        "SELECT count(*) AS n, count(*) FROM t",
+        "SELECT a FROM t WHERE EXISTS (SELECT coalesce(nickname, given_name, family_name, 'someone we never met') FROM u)",
+        "INSERT INTO t (a) SELECT coalesce(nickname, given_name, family_name, 'someone we never met') FROM u",
+      ];
+      for (let text of passes) {
+        let got = canon(text);
+        assert(got == parsed(text, false)) { "${text}: ${got}" }
+      }
+    }
+
+    let longName(name: String, problem: String): String {
+      "SELECT item named \"${name}\" after its text: ${problem}; name it with AS"
+    }
+
+    let readName(name: String): String {
+      "${name} is the name a SELECT item gets from its text; name that item with AS"
+    }
+
+    let namedTwice(name: String): String {
+      "SELECT item named ${name} after its text, as another item is named; name it with AS"
+    }
 
 ## Targets
 
@@ -660,7 +729,7 @@ problem, not a crash.
 
     test("common statement depth") {
       for (let n of [20, 1000]) {
-        let text = "SELECT ${repeated("(SELECT ", n)}1${repeated(")", n)}";
+        let text = "SELECT ${repeated("(SELECT ", n)}1${repeated(")", n)} AS x";
         let got = canon(text);
         if (n == 20) {
           assert(got == text) { got }

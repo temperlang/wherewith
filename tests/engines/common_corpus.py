@@ -14,6 +14,11 @@ written for the engines directly, for what the parser refuses, so each
 refusal's reason stays true. A case or probe can name the claim in
 docs/design.md it confirms, so a failure says which row to correct.
 
+A case or probe can also name the result's columns, for the names
+rendering gives unaliased items (`names`, with `names_differ` for an
+engine whose names differ), and random queries compare their column
+names with SQLite's too.
+
 Results are normalized before comparing (booleans to integers, decimals
 to floats, numbers compared by value), except in rows marked `Raw`,
 which compare the Python type the driver gives back, to pin the
@@ -89,10 +94,13 @@ class Case:
     unchecked: bool = False
     # The claim in docs/design.md the case confirms, named in failures.
     claim: str = ""
+    # The result's column names, if checked, and engines that differ.
+    names: tuple | None = None
+    names_differ: dict = field(default_factory=dict)
 
 
-def C(name, *pieces, rows, unchecked=False, claim="", **differs):  # noqa: N802
-    return Case(name, pieces, rows, differs, unchecked, claim)
+def C(name, *pieces, rows, unchecked=False, claim="", names=None, names_differ=None, **differs):  # noqa: N802
+    return Case(name, pieces, rows, differs, unchecked, claim, names, names_differ or {})
 
 
 @dataclass
@@ -106,10 +114,12 @@ class Probe:
     rows: object  # a list of tuples, ERROR, ACCEPTED, or SKIP
     claim: str
     differs: dict = field(default_factory=dict)
+    names: tuple | None = None
+    names_differ: dict = field(default_factory=dict)
 
 
-def P(name, sql, *, rows, claim, **differs):  # noqa: N802
-    return Probe(name, sql, rows, claim, differs)
+def P(name, sql, *, rows, claim, names=None, names_differ=None, **differs):  # noqa: N802
+    return Probe(name, sql, rows, claim, differs, names, names_differ or {})
 
 
 NOTHING = None
@@ -157,8 +167,8 @@ CASES = [
     C("between and is null", "SELECT id FROM people WHERE score BETWEEN 0 AND 9 OR nick IS NULL ORDER BY id",
       rows=[(2,), (4,), (5,)]),
     C("not between", "SELECT id FROM people WHERE score NOT BETWEEN 0 AND 9 ORDER BY id", rows=[(1,), (2,)]),
-    C("case", "SELECT id, CASE WHEN score > 5 THEN 'high' WHEN score < 0 THEN 'low' ELSE 'mid' END,"
-      " CASE id WHEN 1 THEN 'one' END FROM people ORDER BY id",
+    C("case", "SELECT id, CASE WHEN score > 5 THEN 'high' WHEN score < 0 THEN 'low' ELSE 'mid' END"
+      " AS level, CASE id WHEN 1 THEN 'one' END FROM people ORDER BY id",
       rows=[(1, "high", "one"), (2, "low", None), (3, "mid", None), (4, "mid", None), (5, "high", None)]),
     C("case of values", "SELECT CASE WHEN id = 1 THEN ", H("y"), " ELSE ", H("n"), " END FROM people"
       " WHERE id < 3 ORDER BY id", rows=[("y",), ("n",)]),
@@ -207,6 +217,34 @@ CASES = [
     C("ORDER BY a column beside its cast, in FROM",
       "SELECT x.k, CAST(k AS TEXT) FROM (SELECT owner AS k FROM pets) AS x ORDER BY k DESC, 2",
       rows=[(9, "9"), (2, "2"), (1, "1"), (1, "1")]),
+    # Unaliased items in the outermost query are named after their text,
+    # alike everywhere; columns, qualified or not, keep their names.
+    C("names of unaliased aggregates", "SELECT count(*), sum(score), min(id), count(DISTINCT owner) FROM people"
+      " LEFT JOIN pets ON pets.owner = people.id", rows=[(6, 24, 1, 2)],
+      names=("count(*)", "sum(score)", "min(id)", "count(distinct owner)"),
+      claim="the check stage: names from text (aggregates)"),
+    C("names of unaliased arithmetic", "SELECT id + 1, -score, score * 2, ", H(5), " + 0 FROM people WHERE id = 2",
+      rows=[(3, 3, -6, 5)], names=("id + 1", "-score", "score * 2", "${…} + 0"),
+      claim="the check stage: names from text (arithmetic, and a value as ${…})"),
+    C("names of unaliased functions and casts", "SELECT coalesce(nick, name), CAST(id AS TEXT),"
+      " CASE WHEN flag THEN 'y' ELSE 'n' END, 'Ab' || nick FROM people WHERE id = 1",
+      rows=[("Al", "1", "y", "AbAl")],
+      names=("coalesce(nick, name)", "cast(id as text)", "case when flag then 'y' else 'n' end", "'Ab' || nick"),
+      claim="the check stage: names from text (functions, casts, CASE, and strings keeping their case)"),
+    C("a qualified column's name", "SELECT people.id, pets.kind, p.name FROM people JOIN pets ON pets.owner ="
+      " people.id JOIN people AS p ON p.id = pets.owner WHERE people.id = 2", rows=[(2, "cat", "Bob")],
+      names=("id", "kind", "name"), claim="the check stage: names from text (columns keep their names)"),
+    # Refused: a name from text read elsewhere in the query. SQLite and
+    # DuckDB read it in WHERE as the item, the others fail.
+    C("a name from text in WHERE", "SELECT score + 1 FROM people WHERE \"score + 1\" > 5 ORDER BY id",
+      rows=ERROR, sqlite=[(11,), (8,)], duckdb=[(11,), (8,)], unchecked=True,
+      claim="the check stage: names from text (read in WHERE)"),
+    C("a name from text alone in ORDER BY", "SELECT -score FROM people WHERE score IS NOT NULL ORDER BY \"-score\"",
+      rows=[(-10,), (-7,), (0,), (3,)], names=("-score",), unchecked=True,
+      claim="the check stage: names from text (read alone in ORDER BY, alike but refused for readers)"),
+    C("a name from text twice", "SELECT score + 1, id AS \"score + 1\" FROM people WHERE id = 1",
+      rows=[(11, 1)], names=("score + 1", "score + 1"), unchecked=True,
+      claim="the check stage: names from text (another item's name)"),
     # Documented differences, each asserted to still differ.
     C("LIKE's case", "SELECT id FROM people WHERE name LIKE 'b%' ORDER BY id", rows=[],
       sqlite=[(2,)], mariadb=[(2,)], mysql=[(2,)]),
@@ -528,6 +566,11 @@ PROBES = [
     P("the default collation", "SELECT collation(name) FROM people WHERE id = 1", rows=SKIP,
       mariadb=[("utf8mb4_uca1400_ai_ci",)], mysql=[("utf8mb4_0900_ai_ci",)],
       claim="rendering table, `'a' = 'A'`: MariaDB's and MySQL's default collations"),
+    # Past 63 bytes, PostgreSQL cuts a name short, which is why a long
+    # name from text is refused; MySQL's manual allows 256 characters
+    # for an alias, past Wherewith's 64 for any MySQL name.
+    P("a 70-character alias", f"SELECT 1 AS {'a' * 70}", rows=[(1,)], names=("a" * 70,),
+      names_differ={"postgres": ("a" * 63,)}, claim="the check stage: names from text (length)"),
     P("the locale", "SELECT datcollate FROM pg_database WHERE datname = current_database()", rows=SKIP,
       postgres=[("en_US.utf8",)], claim="rendering table, `UPPER`, `LOWER`: the image's locale"),
 ]
@@ -618,6 +661,28 @@ def run(e, q, style_index: int = 0):
         return Refused(err)
 
 
+def run_named(e, q):
+    """Renders q for the engine and runs it in its first style, giving
+    the rows and the result's column names, or ERROR and None."""
+    st = e.corpus_styles()[0]
+    r = q.render(e.dialect, st.style)
+    try:
+        rows, description = st.run(r, with_description=True)
+        return [tuple(row) for row in rows], tuple(e.result_names(description))
+    except Exception as err:  # noqa: BLE001
+        return Refused(err), None
+
+
+def check_names(e, label: str, got, case) -> None:
+    """Checks the column names a case or probe expects, if any."""
+    if case.names is None:
+        return
+    want = expected(e, case.names_differ, case.names)
+    rt.count("corpus names")
+    if got != want:
+        rt.fail("corpus names", f"{label}: named {got!r}, not {want!r}{claimed(case)}")
+
+
 def setup(e) -> None:
     types = e.corpus_types
     opts = e.corpus_options
@@ -680,6 +745,10 @@ def check_case(e, case: Case) -> None:
             sql = q.render(e.dialect, e.corpus_styles()[i].style).sql
             rt.fail("corpus", f"{case.name} ({e.corpus_styles()[i].name}): {sql!r} gave {got!r}, not {want!r}"
                     f"{claimed(case)}")
+    if case.names is not None:
+        rows, names = run_named(e, q)
+        if rows != ERROR:
+            check_names(e, case.name, names, case)
     if name in case.differs:
         if matches(run(e, q), case.rows):
             rt.fail("corpus", f"{case.name}: documented as different on {name}, but isn't{claimed(case)}")
@@ -693,10 +762,15 @@ def check_probe(e, probe: Probe) -> None:
     if want == SKIP:
         return
     rt.count("corpus probes")
+    names = None
     try:
-        got = [tuple(row) for row in e.execute(probe.sql)]
+        rows, description = e.execute_described(probe.sql)
+        got = [tuple(row) for row in rows]
+        names = tuple(e.result_names(description))
     except Exception as err:  # noqa: BLE001
         got = Refused(err)
+    if got != ERROR:
+        check_names(e, probe.name, names, probe)
     if not matches(got, want):
         rt.fail("corpus probe", f"{probe.name}: {probe.sql!r} gave {got!r}, not {want!r}"
                 f" [docs/design.md: {probe.claim}]")
@@ -796,8 +870,10 @@ class Reference:
         self.conn.executemany("INSERT INTO pets VALUES (?, ?)", PETS)
 
     def rows(self, q):
+        """The rows and the column names."""
         r = q.render(rt.ww.Dialect.sqlite, rt.ww.PlaceholderStyle.question)
-        return [tuple(row) for row in self.conn.execute(r.sql, [rt.py_value(p) for p in r.params])]
+        cur = self.conn.execute(r.sql, [rt.py_value(p) for p in r.params])
+        return [tuple(row) for row in cur.fetchall()], tuple(d[0] for d in cur.description)
 
 
 def check_random(e, seed: int, n: int) -> None:
@@ -813,7 +889,7 @@ def check_random(e, seed: int, n: int) -> None:
             rt.count("corpus random refused")
             continue
         rt.count("corpus random")
-        want = ref.rows(q)
+        want, want_names = ref.rows(q)
         st = rng.randrange(len(e.corpus_styles()))
         if not usable(e, q, st):
             st = 0
@@ -821,3 +897,7 @@ def check_random(e, seed: int, n: int) -> None:
         if not matches(got, want):
             sql = q.render(e.dialect, e.corpus_styles()[st].style).sql
             rt.fail("corpus random", f"{sql!r} gave {got!r}, not SQLite's {want!r}")
+        _, names = run_named(e, q)
+        if names is not None and names != want_names:
+            sql = q.render(e.dialect, e.corpus_styles()[0].style).sql
+            rt.fail("corpus random", f"{sql!r} named its columns {names!r}, not SQLite's {want_names!r}")

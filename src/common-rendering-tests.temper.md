@@ -79,11 +79,11 @@ around every operand that's an operator expression but for `AND` and
         ["SELECT x.a AS b FROM t x", "SELECT `x`.`a` AS `b` FROM `t` AS `x`", "", "", ""],
         ["SELECT DISTINCT * FROM t", "SELECT DISTINCT * FROM `t`", "", "", ""],
         ["SELECT t.* FROM t", "SELECT `t`.* FROM `t`", "", "", ""],
-        ["SELECT 1, 1.50, 'it''s', NULL", "SELECT 1, 1.50, 'it''s', NULL", "", "", ""],
-        ["SELECT TRUE, FALSE", "SELECT TRUE, FALSE", "", "", ""],
+        ["SELECT 1, 1.50, 'it''s', NULL", "SELECT 1 AS `1`, 1.50 AS `1.50`, 'it''s' AS `'it''s'`, NULL AS `null`", "", "", ""],
+        ["SELECT TRUE, FALSE", "SELECT TRUE AS `true`, FALSE AS `false`", "", "", ""],
         [
           "SELECT (a + b) * c, a - -1, -(-a), a * b % 3 FROM t",
-          "SELECT (`a` + `b`) * `c`, `a` - (-1), -(-`a`), (`a` * `b`) % 3 FROM `t`", "", "", "",
+          "SELECT (`a` + `b`) * `c` AS `(a + b) * c`, `a` - (-1) AS `a - -1`, -(-`a`) AS `- -a`, (`a` * `b`) % 3 AS `a * b % 3` FROM `t`", "", "", "",
         ],
         [
           "SELECT a FROM t WHERE a = 1 OR b <> 2 AND NOT c != 3",
@@ -112,27 +112,27 @@ around every operand that's an operator expression but for `AND` and
         ],
         [
           "SELECT CASE a WHEN 1 THEN 'one' ELSE 'other' END, CASE WHEN a > 1 THEN b END FROM t",
-          "SELECT CASE `a` WHEN 1 THEN 'one' ELSE 'other' END, CASE WHEN `a` > 1 THEN `b` END FROM `t`", "", "", "",
+          "SELECT CASE `a` WHEN 1 THEN 'one' ELSE 'other' END AS `case a when 1 then 'one' else 'other' end`, CASE WHEN `a` > 1 THEN `b` END AS `case when a > 1 then b end` FROM `t`", "", "", "",
         ],
         [
           "SELECT coalesce(a, b), nullif(a, 1), abs(a), lower(b), upper(b), trim(b), replace(b, 'x', 'y'), substr(b, 2, 3) FROM t",
-          "SELECT COALESCE(`a`, `b`), NULLIF(`a`, 1), ABS(`a`), LOWER(`b`), UPPER(`b`), TRIM(`b`), REPLACE(`b`, 'x', 'y'), SUBSTR(`b`, 2, 3) FROM `t`",
+          "SELECT COALESCE(`a`, `b`) AS `coalesce(a, b)`, NULLIF(`a`, 1) AS `nullif(a, 1)`, ABS(`a`) AS `abs(a)`, LOWER(`b`) AS `lower(b)`, UPPER(`b`) AS `upper(b)`, TRIM(`b`) AS `trim(b)`, REPLACE(`b`, 'x', 'y') AS `replace(b, 'x', 'y')`, SUBSTR(`b`, 2, 3) AS `substr(b, 2, 3)` FROM `t`",
           "", "", "",
         ],
         [
           "SELECT count(*), count(DISTINCT a), sum(a), avg(a), min(a), max(a) FROM t",
-          "SELECT COUNT(*), COUNT(DISTINCT `a`), SUM(`a`), AVG(`a`), MIN(`a`), MAX(`a`) FROM `t`", "", "", "",
+          "SELECT COUNT(*) AS `count(*)`, COUNT(DISTINCT `a`) AS `count(distinct a)`, SUM(`a`) AS `sum(a)`, AVG(`a`) AS `avg(a)`, MIN(`a`) AS `min(a)`, MAX(`a`) AS `max(a)` FROM `t`", "", "", "",
         ],
         [
           "SELECT a, count(*) FROM t GROUP BY a HAVING count(*) > 1",
-          "SELECT `a`, COUNT(*) FROM `t` GROUP BY `a` HAVING COUNT(*) > 1", "", "", "",
+          "SELECT `a`, COUNT(*) AS `count(*)` FROM `t` GROUP BY `a` HAVING COUNT(*) > 1", "", "", "",
         ],
         [
           "SELECT t.a FROM t INNER JOIN u ON t.id = u.id LEFT OUTER JOIN v ON v.id = u.id CROSS JOIN w",
           "SELECT `t`.`a` FROM `t` JOIN `u` ON `t`.`id` = `u`.`id` LEFT JOIN `v` ON `v`.`id` = `u`.`id` CROSS JOIN `w`",
           "", "", "",
         ],
-        ["SELECT a / 2.0, 7.5 / a FROM t", "SELECT `a` / 2.0, 7.5 / `a` FROM `t`", "", "", ""],
+        ["SELECT a / 2.0, 7.5 / a FROM t", "SELECT `a` / 2.0 AS `a / 2.0`, 7.5 / `a` AS `7.5 / a` FROM `t`", "", "", ""],
         ["INSERT INTO t (a, b) VALUES (1, 'x'), (2, NULL)", "INSERT INTO `t` (`a`, `b`) VALUES (1, 'x'), (2, NULL)", "", "", ""],
         ["INSERT INTO s.t (a) SELECT b FROM u", "INSERT INTO `s`.`t` (`a`) SELECT `b` FROM `u`", "", "", ""],
         ["UPDATE t SET a = a + 1, b = 'x' WHERE c = 2", "UPDATE `t` SET `a` = `a` + 1, `b` = 'x' WHERE `c` = 2", "", "", ""],
@@ -150,16 +150,16 @@ the unwritten order), casts, and `LENGTH`.
       let found = renderMismatches([
         [
           "SELECT a || 'x' || b, 1 || 2 FROM t",
-          "SELECT `a` || 'x' || `b`, 1 || 2 FROM `t`",
-          "SELECT `a` || 'x' || `b`, CAST(1 AS TEXT) || 2 FROM `t`",
-          "SELECT CONCAT(`a`, 'x', `b`), CONCAT(1, 2) FROM `t`",
+          "SELECT `a` || 'x' || `b` AS `a || 'x' || b`, 1 || 2 AS `1 || 2` FROM `t`",
+          "SELECT `a` || 'x' || `b` AS `a || 'x' || b`, CAST(1 AS TEXT) || 2 AS `1 || 2` FROM `t`",
+          "SELECT CONCAT(`a`, 'x', `b`) AS `a || 'x' || b`, CONCAT(1, 2) AS `1 || 2` FROM `t`",
           "",
         ],
         [
           "SELECT a || b, (a + 1) || 'x' FROM t",
-          "SELECT `a` || `b`, (`a` + 1) || 'x' FROM `t`",
-          "SELECT CAST(`a` AS TEXT) || `b`, (`a` + 1) || 'x' FROM `t`",
-          "SELECT CONCAT(`a`, `b`), CONCAT(`a` + 1, 'x') FROM `t`",
+          "SELECT `a` || `b` AS `a || b`, (`a` + 1) || 'x' AS `(a + 1) || 'x'` FROM `t`",
+          "SELECT CAST(`a` AS TEXT) || `b` AS `a || b`, (`a` + 1) || 'x' AS `(a + 1) || 'x'` FROM `t`",
+          "SELECT CONCAT(`a`, `b`) AS `a || b`, CONCAT(`a` + 1, 'x') AS `(a + 1) || 'x'` FROM `t`",
           "",
         ],
         ["SELECT a FROM t LIMIT 5 OFFSET 2", "SELECT `a` FROM `t` LIMIT 5 OFFSET 2", "", "", ""],
@@ -194,16 +194,16 @@ the unwritten order), casts, and `LENGTH`.
         ],
         [
           "SELECT CAST(a AS INTEGER), CAST(a AS DOUBLE), CAST(a AS TEXT) FROM t",
-          "SELECT CAST(`a` AS INTEGER), CAST(`a` AS REAL), CAST(`a` AS TEXT) FROM `t`",
-          "SELECT CAST(`a` AS BIGINT), CAST(`a` AS DOUBLE PRECISION), CAST(`a` AS TEXT) FROM `t`",
-          "SELECT CAST(`a` AS SIGNED), CAST(`a` AS DOUBLE), CAST(`a` AS CHAR) FROM `t`",
-          "SELECT CAST(`a` AS BIGINT), CAST(`a` AS DOUBLE), CAST(`a` AS VARCHAR) FROM `t`",
+          "SELECT CAST(`a` AS INTEGER) AS `cast(a as integer)`, CAST(`a` AS REAL) AS `cast(a as double)`, CAST(`a` AS TEXT) AS `cast(a as text)` FROM `t`",
+          "SELECT CAST(`a` AS BIGINT) AS `cast(a as integer)`, CAST(`a` AS DOUBLE PRECISION) AS `cast(a as double)`, CAST(`a` AS TEXT) AS `cast(a as text)` FROM `t`",
+          "SELECT CAST(`a` AS SIGNED) AS `cast(a as integer)`, CAST(`a` AS DOUBLE) AS `cast(a as double)`, CAST(`a` AS CHAR) AS `cast(a as text)` FROM `t`",
+          "SELECT CAST(`a` AS BIGINT) AS `cast(a as integer)`, CAST(`a` AS DOUBLE) AS `cast(a as double)`, CAST(`a` AS VARCHAR) AS `cast(a as text)` FROM `t`",
         ],
         [
           "SELECT length(a) FROM t",
-          "SELECT LENGTH(`a`) FROM `t`",
+          "SELECT LENGTH(`a`) AS `length(a)` FROM `t`",
           "",
-          "SELECT CHAR_LENGTH(`a`) FROM `t`",
+          "SELECT CHAR_LENGTH(`a`) AS `length(a)` FROM `t`",
           "",
         ],
       ]);
@@ -223,76 +223,71 @@ the unwritten order), casts, and `LENGTH`.
 
 ## Output names
 
-PostgreSQL reads a bare name alone in `ORDER BY` as an item it names
-after that column, if there is one, so rendering for it qualifies the
-column, as `t.a`, where the item isn't the column itself: a cast, a
-function named as the column, `CASE`, a subquery, or a value. The
-others read the column, unqualified.
+In the outermost query, rendering names each unaliased expression
+after its text, so a bare name alone in `ORDER BY` reads as a column
+on PostgreSQL too, unqualified, as on the others. Elsewhere,
+PostgreSQL still names an unaliased item after a column, a function,
+or a type, and reads a bare name as that item if there is one, so
+rendering for it qualifies the column, as `t.a`: here, in a query
+after `INSERT`.
 
-    test("common rendering qualifies ORDER BY columns for postgres") {
+    test("common rendering of output names for postgres") {
       let found = renderMismatches([
         [
           "SELECT id, CAST(id AS DOUBLE) FROM people ORDER BY id",
-          "SELECT `id`, CAST(`id` AS REAL) FROM `people` ORDER BY `id`",
-          "SELECT `id`, CAST(`id` AS DOUBLE PRECISION) FROM `people` ORDER BY `people`.`id` NULLS FIRST",
-          "SELECT `id`, CAST(`id` AS DOUBLE) FROM `people` ORDER BY `id`",
-          "SELECT `id`, CAST(`id` AS DOUBLE) FROM `people` ORDER BY `id` NULLS FIRST",
+          "SELECT `id`, CAST(`id` AS REAL) AS `cast(id as double)` FROM `people` ORDER BY `id`",
+          "SELECT `id`, CAST(`id` AS DOUBLE PRECISION) AS `cast(id as double)` FROM `people` ORDER BY `id` NULLS FIRST",
+          "SELECT `id`, CAST(`id` AS DOUBLE) AS `cast(id as double)` FROM `people` ORDER BY `id`",
+          "SELECT `id`, CAST(`id` AS DOUBLE) AS `cast(id as double)` FROM `people` ORDER BY `id` NULLS FIRST",
         ],
         [
           "SELECT CAST(score AS TEXT) FROM people AS p ORDER BY score DESC, p.score",
-          "SELECT CAST(`score` AS TEXT) FROM `people` AS `p` ORDER BY `score` DESC, `p`.`score`",
-          "SELECT CAST(`score` AS TEXT) FROM `people` AS `p` ORDER BY `p`.`score` DESC NULLS LAST, `p`.`score` NULLS FIRST",
-          "SELECT CAST(`score` AS CHAR) FROM `people` AS `p` ORDER BY `score` DESC, `p`.`score`",
-          "SELECT CAST(`score` AS VARCHAR) FROM `people` AS `p` ORDER BY `score` DESC NULLS LAST, `p`.`score` NULLS FIRST",
+          "SELECT CAST(`score` AS TEXT) AS `cast(score as text)` FROM `people` AS `p` ORDER BY `score` DESC, `p`.`score`",
+          "SELECT CAST(`score` AS TEXT) AS `cast(score as text)` FROM `people` AS `p` ORDER BY `score` DESC NULLS LAST, `p`.`score` NULLS FIRST",
+          "SELECT CAST(`score` AS CHAR) AS `cast(score as text)` FROM `people` AS `p` ORDER BY `score` DESC, `p`.`score`",
+          "SELECT CAST(`score` AS VARCHAR) AS `cast(score as text)` FROM `people` AS `p` ORDER BY `score` DESC NULLS LAST, `p`.`score` NULLS FIRST",
         ],
         [
           "SELECT length(a), trim(b), c FROM t ORDER BY 1 DESC, \"length\" DESC, \"trim\" DESC, btrim DESC, c DESC",
-          "SELECT LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC, `length` DESC, `trim` DESC, `btrim` DESC, `c` DESC",
-          "SELECT LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC NULLS LAST, `t`.`length` DESC NULLS LAST, `trim` DESC NULLS LAST, `t`.`btrim` DESC NULLS LAST, `c` DESC NULLS LAST",
-          "SELECT CHAR_LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC, `length` DESC, `trim` DESC, `btrim` DESC, `c` DESC",
-          "SELECT LENGTH(`a`), TRIM(`b`), `c` FROM `t` ORDER BY 1 DESC NULLS LAST, `length` DESC NULLS LAST, `trim` DESC NULLS LAST, `btrim` DESC NULLS LAST, `c` DESC NULLS LAST",
+          "SELECT LENGTH(`a`) AS `length(a)`, TRIM(`b`) AS `trim(b)`, `c` FROM `t` ORDER BY 1 DESC, `length` DESC, `trim` DESC, `btrim` DESC, `c` DESC",
+          "SELECT LENGTH(`a`) AS `length(a)`, TRIM(`b`) AS `trim(b)`, `c` FROM `t` ORDER BY 1 DESC NULLS LAST, `length` DESC NULLS LAST, `trim` DESC NULLS LAST, `btrim` DESC NULLS LAST, `c` DESC NULLS LAST",
+          "SELECT CHAR_LENGTH(`a`) AS `length(a)`, TRIM(`b`) AS `trim(b)`, `c` FROM `t` ORDER BY 1 DESC, `length` DESC, `trim` DESC, `btrim` DESC, `c` DESC",
+          "SELECT LENGTH(`a`) AS `length(a)`, TRIM(`b`) AS `trim(b)`, `c` FROM `t` ORDER BY 1 DESC NULLS LAST, `length` DESC NULLS LAST, `trim` DESC NULLS LAST, `btrim` DESC NULLS LAST, `c` DESC NULLS LAST",
         ],
         [
           "SELECT CASE WHEN a > 0 THEN b ELSE c END, (SELECT max(b) FROM u) AS m, CAST(a + 1 AS TEXT) FROM t ORDER BY c DESC, \"max\" DESC, \"text\" DESC, a DESC",
-          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS TEXT) FROM `t` ORDER BY `c` DESC, `max` DESC, `text` DESC, `a` DESC",
-          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS TEXT) FROM `t` ORDER BY `t`.`c` DESC NULLS LAST, `max` DESC NULLS LAST, `t`.`text` DESC NULLS LAST, `a` DESC NULLS LAST",
-          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS CHAR) FROM `t` ORDER BY `c` DESC, `max` DESC, `text` DESC, `a` DESC",
-          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS VARCHAR) FROM `t` ORDER BY `c` DESC NULLS LAST, `max` DESC NULLS LAST, `text` DESC NULLS LAST, `a` DESC NULLS LAST",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END AS `case when a > 0 then b else c end`, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS TEXT) AS `cast(a + 1 as text)` FROM `t` ORDER BY `c` DESC, `max` DESC, `text` DESC, `a` DESC",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END AS `case when a > 0 then b else c end`, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS TEXT) AS `cast(a + 1 as text)` FROM `t` ORDER BY `c` DESC NULLS LAST, `max` DESC NULLS LAST, `text` DESC NULLS LAST, `a` DESC NULLS LAST",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END AS `case when a > 0 then b else c end`, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS CHAR) AS `cast(a + 1 as text)` FROM `t` ORDER BY `c` DESC, `max` DESC, `text` DESC, `a` DESC",
+          "SELECT CASE WHEN `a` > 0 THEN `b` ELSE `c` END AS `case when a > 0 then b else c end`, (SELECT MAX(`b`) FROM `u`) AS `m`, CAST(`a` + 1 AS VARCHAR) AS `cast(a + 1 as text)` FROM `t` ORDER BY `c` DESC NULLS LAST, `max` DESC NULLS LAST, `text` DESC NULLS LAST, `a` DESC NULLS LAST",
         ],
         [
           "SELECT (SELECT max(b) FROM u), EXISTS (SELECT 1 FROM u) FROM t ORDER BY \"max\" DESC, \"exists\" DESC",
-          "SELECT (SELECT MAX(`b`) FROM `u`), EXISTS (SELECT 1 FROM `u`) FROM `t` ORDER BY `max` DESC, `exists` DESC",
-          "SELECT (SELECT MAX(`b`) FROM `u`), EXISTS (SELECT 1 FROM `u`) FROM `t` ORDER BY `t`.`max` DESC NULLS LAST, `t`.`exists` DESC NULLS LAST",
+          "SELECT (SELECT MAX(`b`) FROM `u`) AS `(select max(b) from u)`, EXISTS (SELECT 1 FROM `u`) AS `exists (select 1 from u)` FROM `t` ORDER BY `max` DESC, `exists` DESC",
+          "SELECT (SELECT MAX(`b`) FROM `u`) AS `(select max(b) from u)`, EXISTS (SELECT 1 FROM `u`) AS `exists (select 1 from u)` FROM `t` ORDER BY `max` DESC NULLS LAST, `exists` DESC NULLS LAST",
           "",
-          "SELECT (SELECT MAX(`b`) FROM `u`), EXISTS (SELECT 1 FROM `u`) FROM `t` ORDER BY `max` DESC NULLS LAST, `exists` DESC NULLS LAST",
-        ],
-        [
-          "SELECT id, t.id, id AS id FROM t ORDER BY id DESC",
-          "SELECT `id`, `t`.`id`, `id` AS `id` FROM `t` ORDER BY `id` DESC",
-          "SELECT `id`, `t`.`id`, `id` AS `id` FROM `t` ORDER BY `id` DESC NULLS LAST",
-          "",
-          "SELECT `id`, `t`.`id`, `id` AS `id` FROM `t` ORDER BY `id` DESC NULLS LAST",
+          "SELECT (SELECT MAX(`b`) FROM `u`) AS `(select max(b) from u)`, EXISTS (SELECT 1 FROM `u`) AS `exists (select 1 from u)` FROM `t` ORDER BY `max` DESC NULLS LAST, `exists` DESC NULLS LAST",
         ],
         [
           "SELECT x.k, CAST(k AS TEXT) FROM (SELECT kind AS k FROM pets ORDER BY k DESC LIMIT 3) AS x ORDER BY k DESC",
-          "SELECT `x`.`k`, CAST(`k` AS TEXT) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC LIMIT 3) AS `x` ORDER BY `k` DESC",
-          "SELECT `x`.`k`, CAST(`k` AS TEXT) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC NULLS LAST LIMIT 3) AS `x` ORDER BY `x`.`k` DESC NULLS LAST",
-          "SELECT `x`.`k`, CAST(`k` AS CHAR) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC LIMIT 3) AS `x` ORDER BY `k` DESC",
-          "SELECT `x`.`k`, CAST(`k` AS VARCHAR) FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC NULLS LAST LIMIT 3) AS `x` ORDER BY `k` DESC NULLS LAST",
+          "SELECT `x`.`k`, CAST(`k` AS TEXT) AS `cast(k as text)` FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC LIMIT 3) AS `x` ORDER BY `k` DESC",
+          "SELECT `x`.`k`, CAST(`k` AS TEXT) AS `cast(k as text)` FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC NULLS LAST LIMIT 3) AS `x` ORDER BY `k` DESC NULLS LAST",
+          "SELECT `x`.`k`, CAST(`k` AS CHAR) AS `cast(k as text)` FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC LIMIT 3) AS `x` ORDER BY `k` DESC",
+          "SELECT `x`.`k`, CAST(`k` AS VARCHAR) AS `cast(k as text)` FROM (SELECT `kind` AS `k` FROM `pets` ORDER BY `k` DESC NULLS LAST LIMIT 3) AS `x` ORDER BY `k` DESC NULLS LAST",
         ],
         [
           "SELECT DISTINCT a, CAST(a AS TEXT) FROM t ORDER BY a DESC",
-          "SELECT DISTINCT `a`, CAST(`a` AS TEXT) FROM `t` ORDER BY `a` DESC",
-          "SELECT DISTINCT `a`, CAST(`a` AS TEXT) FROM `t` ORDER BY `t`.`a` DESC NULLS LAST",
-          "SELECT DISTINCT `a`, CAST(`a` AS CHAR) FROM `t` ORDER BY `a` DESC",
-          "SELECT DISTINCT `a`, CAST(`a` AS VARCHAR) FROM `t` ORDER BY `a` DESC NULLS LAST",
+          "SELECT DISTINCT `a`, CAST(`a` AS TEXT) AS `cast(a as text)` FROM `t` ORDER BY `a` DESC",
+          "SELECT DISTINCT `a`, CAST(`a` AS TEXT) AS `cast(a as text)` FROM `t` ORDER BY `a` DESC NULLS LAST",
+          "SELECT DISTINCT `a`, CAST(`a` AS CHAR) AS `cast(a as text)` FROM `t` ORDER BY `a` DESC",
+          "SELECT DISTINCT `a`, CAST(`a` AS VARCHAR) AS `cast(a as text)` FROM `t` ORDER BY `a` DESC NULLS LAST",
         ],
         [
           "SELECT a, CAST(a AS TEXT), count(*) FROM t GROUP BY a ORDER BY a DESC",
-          "SELECT `a`, CAST(`a` AS TEXT), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `a` DESC",
-          "SELECT `a`, CAST(`a` AS TEXT), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `t`.`a` DESC NULLS LAST",
-          "SELECT `a`, CAST(`a` AS CHAR), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `a` DESC",
-          "SELECT `a`, CAST(`a` AS VARCHAR), COUNT(*) FROM `t` GROUP BY `a` ORDER BY `a` DESC NULLS LAST",
+          "SELECT `a`, CAST(`a` AS TEXT) AS `cast(a as text)`, COUNT(*) AS `count(*)` FROM `t` GROUP BY `a` ORDER BY `a` DESC",
+          "SELECT `a`, CAST(`a` AS TEXT) AS `cast(a as text)`, COUNT(*) AS `count(*)` FROM `t` GROUP BY `a` ORDER BY `a` DESC NULLS LAST",
+          "SELECT `a`, CAST(`a` AS CHAR) AS `cast(a as text)`, COUNT(*) AS `count(*)` FROM `t` GROUP BY `a` ORDER BY `a` DESC",
+          "SELECT `a`, CAST(`a` AS VARCHAR) AS `cast(a as text)`, COUNT(*) AS `count(*)` FROM `t` GROUP BY `a` ORDER BY `a` DESC NULLS LAST",
         ],
         [
           "INSERT INTO u (a, b) SELECT t.*, CAST(a AS TEXT) FROM s.t ORDER BY a DESC",
@@ -303,15 +298,25 @@ others read the column, unqualified.
         ],
       ]);
       assert(found == "") { found }
-      // A value alone is cast for PostgreSQL, and named after its type.
-      let v = sql"SELECT ${1}, ${"x"}, a FROM t ORDER BY int8 DESC, float8 DESC";
+      // A value alone is cast for PostgreSQL, and named as a value,
+      // not after its type.
+      let v = sql"SELECT ${1}, a FROM t ORDER BY int8 DESC, float8 DESC";
       assert(render(v, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
-        "SELECT CAST($1 AS BIGINT), CAST($2 AS TEXT), \"a\" FROM \"t\" ORDER BY \"t\".\"int8\" DESC NULLS LAST, \"float8\" DESC NULLS LAST");
+        "SELECT CAST($1 AS BIGINT) AS \"\${…}\", \"a\" FROM \"t\" ORDER BY \"int8\" DESC NULLS LAST, \"float8\" DESC NULLS LAST");
       // A name hole is its name.
       let col = Identifier.named("id") orelse panic();
       let h = sql"SELECT ${col}, CAST(${col} AS TEXT) FROM t ORDER BY ${col} DESC";
       assert(render(h, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
-        "SELECT \"id\", CAST(\"id\" AS TEXT) FROM \"t\" ORDER BY \"t\".\"id\" DESC NULLS LAST");
+        "SELECT \"id\", CAST(\"id\" AS TEXT) AS \"cast(id as text)\" FROM \"t\" ORDER BY \"id\" DESC NULLS LAST");
+      // Names keep their case, quoted, and strings theirs; a name hole
+      // is its name, and a value is `${…}`.
+      let mixed = Identifier.named("Mixed") orelse panic();
+      let m = sql"SELECT upper(${mixed}) || 'Ab' || ${"x"}, ${col} + 1 FROM t";
+      assert(render(m, Dialect.sqlite, PlaceholderStyle.question) ==
+        "SELECT UPPER(\"Mixed\") || 'Ab' || ? AS \"upper(\"\"Mixed\"\") || 'Ab' || \${…}\", \"id\" + 1 AS \"id + 1\" FROM \"t\"");
+      let g = sql"INSERT INTO u (a, b) SELECT ${col}, CAST(${col} AS TEXT) FROM t ORDER BY ${col} DESC";
+      assert(render(g, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "INSERT INTO \"u\" (\"a\", \"b\") SELECT \"id\", CAST(\"id\" AS TEXT) FROM \"t\" ORDER BY \"t\".\"id\" DESC NULLS LAST");
     }
 
 ## Values
@@ -469,10 +474,14 @@ anything else stays, and so does the canonical form.
       assert(v.params.length == 8);
       let c = v.render(Dialect.common, PlaceholderStyle.question) orelse panic();
       assert(c.params.length == 8);
-      // PostgreSQL names a folded value after its type, as a value.
-      let named = sql"SELECT -${-1}, a FROM t ORDER BY int8";
+      // PostgreSQL names a folded value after its type, as a value,
+      // where rendering doesn't name it: here, after INSERT.
+      let named = sql"INSERT INTO u (a, b) SELECT -${-1}, a FROM t ORDER BY int8";
       assert(render(named, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
-        "SELECT CAST($1 AS BIGINT), \"a\" FROM \"t\" ORDER BY \"t\".\"int8\" NULLS FIRST");
+        "INSERT INTO \"u\" (\"a\", \"b\") SELECT CAST($1 AS BIGINT), \"a\" FROM \"t\" ORDER BY \"t\".\"int8\" NULLS FIRST");
+      let top = sql"SELECT -${-1}, a FROM t ORDER BY int8";
+      assert(render(top, Dialect.postgres, PlaceholderStyle.dollarNumbered) ==
+        "SELECT CAST($1 AS BIGINT) AS \"-\${…}\", \"a\" FROM \"t\" ORDER BY \"int8\" NULLS FIRST");
       // An unchecked query refuses an overflow when it renders.
       let min = -0x8000_0000_0000_0000_i64;
       let loose = Query.unchecked(Dialect.common, [textPart("SELECT -"), new QueryParam(new SqlInt(min))]);
@@ -603,8 +612,11 @@ both MySQL profiles.
         let text = generatedStatement(r);
         let q = Query.unchecked(Dialect.common, [textPart(text)]);
         for (let d of databases()) {
+          // Unaliased items are named after their text, which can be
+          // too long, as the checks would have said.
           let problem = q.renderProblem(d, PlaceholderStyle.question);
-          assert(problem == null) { "${text} for ${d.name}: ${problem ?? ""}" }
+          let long = problem != null && hasAt(problem ?? "", String.begin, "name longer than");
+          assert(problem == null || long) { "${text} for ${d.name}: ${problem ?? ""}" }
         }
         assert(render(q, Dialect.mysql, PlaceholderStyle.question) ==
           render(q, Dialect.mysqlNoBackslashEscapes, PlaceholderStyle.question)) { text }

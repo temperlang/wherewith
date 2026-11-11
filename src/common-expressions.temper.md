@@ -2472,7 +2472,12 @@ one, such as a `BIGINT` column or a value, is cast to `INTEGER`.
           hole(n.hole);
           return;
         }
-        let value = lexer.nameValue(n.token);
+        nameValue(lexer.nameValue(n.token));
+      }
+
+`nameValue` writes a name's text, quoted for the target.
+
+      public nameValue(value: String): Void {
         let t = target;
         if (t != null) {
           out.append(t.dialect.quoteName(value) orelse "");

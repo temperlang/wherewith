@@ -30,6 +30,13 @@ The same for every database:
   `- (-1)`, never a comment.
 - **Keywords** are written as in canonical common SQL, with `AS` before
   every alias, and `<>` for `!=`.
+- **Names from text:** in the outermost query, an item that's neither
+  a column nor aliased gets an alias, its canonical common SQL with
+  letters outside quotes in lowercase and each value as `${…}`:
+  `SELECT count(*), a + 1` is written `SELECT COUNT(*) AS "count(*)",
+  "a" + 1 AS "a + 1"`. Otherwise SQLite would name it `count(*)`,
+  PostgreSQL `count`, MySQL `COUNT(*)`, and DuckDB `count_star()`. A
+  column, `c` or `t.c`, is named `c` everywhere, and keeps that.
 
 Where they differ (the [design](../docs/design.md#rendering-per-dialect)
 has the whole table, with what's only documented):
@@ -55,8 +62,10 @@ repeats `x` and its values; for a place (`ORDER BY 2`) or an alias,
 `x` is the item it stands for.
 
 PostgreSQL reads a column alone in `ORDER BY` as a `SELECT` item it
-names after the column, if there is one, such as `CAST(c AS TEXT)`, so
-rendering writes the column with its table there, `t.c`, as the
+names after the column, if there is one, such as `CAST(c AS TEXT)`.
+In the outermost query, rendering names that item after its text
+instead; elsewhere (in a query after `INSERT`), rendering writes the
+column with its table, `t.c`, as the
 [output names](common-statements.temper.md#output-names) say.
 
 PostgreSQL types a parameter from what's around it (with drivers that

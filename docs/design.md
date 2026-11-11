@@ -548,7 +548,10 @@ one statement (`"Id"` and `id`), which PostgreSQL reads as two names
 and the others as one (SQLite and DuckDB even quoted, checked), but for
 MySQL's table names and their aliases, which follow its
 `lower_case_table_names` setting, so they're refused for MySQL alone
-too. For MySQL
+too; and [names from text](#decided) (2026-11-11) that are too long for
+a target, another item's, or read in `WHERE`, `ON`, `GROUP BY`,
+`HAVING`, or `ORDER BY`, compared without regard to case, each asking
+for an `AS`. For MySQL
 targets also: the `UPDATE … SET` trap, a subquery reading the table an
 `UPDATE`, `DELETE`, or `INSERT … VALUES` changes, `LIMIT` in an `IN`
 subquery, `*` after other items (`a, *`; every engine takes
@@ -580,7 +583,10 @@ name items differently (2026-11-10, from CI's random queries):
   matches that aren't the same column are an error ("ORDER BY "id" is
   ambiguous"), and one that isn't the column silently sorts by the
   item: `SELECT CAST(score AS TEXT) … ORDER BY score` sorts text.
-  Rendering for PostgreSQL writes such a column qualified, `people.id`,
+  In the outermost query, rendering now names those items after their
+  text (2026-11-11), so this is left to subqueries and queries after
+  `INSERT`. There, rendering for PostgreSQL writes such a column
+  qualified, `people.id`,
   which always means the input column, as everywhere else; that also
   holds with `DISTINCT`, since the qualified column matches its item,
   and with `GROUP BY`, which PostgreSQL resolves against columns first.
@@ -656,7 +662,8 @@ would check it, so a value can't land in a quote or comment.
 | `TRUE`, `FALSE` | `TRUE`, `FALSE` (1 and 0, from 3.23) | same | same (1 and 0) | same | Same text; results differ, documented |
 | `a \|\| b` | `a \|\| b` | `a \|\| b`, values cast to `TEXT`, and `a` too if neither is text | `CONCAT(a, b)` | `a \|\| b` | Emulate: MySQL's `\|\|` is `OR` without `PIPES_AS_CONCAT`, and PostgreSQL has no `\|\|` for two numbers; `CONCAT` gives `NULL` on any `NULL`, as `\|\|` does |
 | `LIMIT n OFFSET m` | same | same | same | same | Same |
-| `ORDER BY c` beside an item PostgreSQL names `c`, such as `CAST(c AS TEXT)` | `c` | `t.c` | `c` | `c` | Qualify for PostgreSQL, which would read the item; refuse where the table isn't known |
+| `SELECT count(*), a + 1`: names of unaliased expressions | `count(*)`, `a + 1` (the text) | `count`, `?column?` | `COUNT(*)`, `` `a` + 1 `` (the text sent) | `count_star()`, `(a + 1)` | In the outermost query, alias each after its text: `AS "count(*)"`, `AS "a + 1"`; refuse a name too long, another item's, or read elsewhere in the query. Columns (`t.a` too) are named `a` everywhere |
+| `ORDER BY c` beside an item PostgreSQL names `c`, such as `CAST(c AS TEXT)` | `c` | `t.c` | `c` | `c` | Outermost query: the item is named after its text, so none; elsewhere, qualify for PostgreSQL, which would read the item, and refuse where the table isn't known |
 | `OFFSET m` alone | `LIMIT -1 OFFSET m` | `OFFSET m` | `LIMIT 18446744073709551615 OFFSET m` | `OFFSET m` (refuses `LIMIT -1`) | Emulate, as each manual says |
 | Default `NULL` order | smallest | largest | smallest | last, both directions, unless `default_null_order` says otherwise | Common: smallest |
 | `x NULLS LAST` (`ASC`) | `x NULLS LAST` (from 3.30) | `x` | `x IS NULL, x` | `x NULLS LAST` | `NULLS` where the default differs, and always for DuckDB, whose default is a setting; MySQL, which lacks it, sorts by `x IS NULL` first, repeating `x` and its values (for a place or an alias, its item; refused for a place at or after a `*`) |
@@ -813,6 +820,9 @@ Statement rules, from the [parser](#the-parser) and the
 | A name in another case (`"ID"` for `id`, `"PEOPLE"` for `people`) | Confirmed: the same name, quoted or not | Pending CI: PostgreSQL refuses both; MariaDB takes the column and refuses the table | Pending CI: as MariaDB, with `lower_case_table_names` 0 |
 | NUL in a text value | Confirmed: SQLite's `length` stops at it (1 for `'a\0b'`), DuckDB's doesn't (3) | Pending CI: PostgreSQL refuses it, MariaDB gives 3 | Pending CI: 3 |
 | A float zero value, and `SELECT DISTINCT` with `NULLS LAST` (`x IS NULL, x` for MySQL) | Confirmed: `0.0`, and the same rows | Pending CI | Pending CI |
+| Names from text: aggregates, arithmetic, functions, casts, and a value named alike, and qualified columns named as columns ("names of unaliased aggregates" and the cases after it) | Confirmed, with every random query's names SQLite's | Pending CI | Pending CI |
+| A name from text read in `WHERE`, alone in `ORDER BY`, or twice | Confirmed: `WHERE` reads the item; `ORDER BY` reads it too; two items get one name | Pending CI: both fail in `WHERE`; the rest as SQLite | Pending CI: as MariaDB |
+| A 70-character alias ("a 70-character alias") | Confirmed: kept whole | Pending CI: PostgreSQL cuts it to 63 bytes; MariaDB keeps it | Pending CI: kept, its manual allowing 256 characters for an alias, past the 64 Wherewith allows any MySQL name |
 
 ### Testing
 
@@ -1100,13 +1110,6 @@ Each has a recommendation, but stays open until decided.
    (`ColumnType` differs the most)? Recommended: start with SQLite's
    column types, defaults, foreign-key actions, functions, and
    operators.
-7. **Result names of unaliased expressions** differ: `SELECT
-   count(*)` names its column `count(*)` in SQLite, `count` in
-   PostgreSQL, `COUNT(*)` in MySQL (from the rendered text), and
-   `count_star()` in DuckDB, which matters to code that reads columns
-   by name. Refuse them, write a canonical alias when rendering, or
-   document it? Recommended: write a canonical alias, as its own
-   change, since PostgreSQL's `ORDER BY` reads output names.
 
 ## Decided
 
@@ -1200,6 +1203,22 @@ closest to standard SQL.
 13. **Rendering only for targets:** a common query records the targets
     it was checked for, and renders only for them; narrower targets
     relax the checks for constructs those targets read alike.
+14. **Names from text** (2026-11-11): databases name an unaliased
+    expression differently (`count(*)` in SQLite, `count` in
+    PostgreSQL, `COUNT(*)` in MySQL, `count_star()` in DuckDB), so in
+    the outermost query rendering aliases each one after its text: its
+    canonical common SQL, with ASCII letters outside quotes in
+    lowercase and each value written `${…}`, as errors write holes
+    (`count(*)`, `a + 1`, `lower("Name")`, `${…} + 1`). Columns,
+    qualified or not, keep their own names, which every database
+    agrees on, and an `AS` is the user's. The checks refuse such a
+    name over a target's limit (PostgreSQL would cut it at 63 bytes;
+    MySQL names stop at 64 characters), never shortening or hashing
+    it; one another item has; and one read in `WHERE`, `ON`, `GROUP
+    BY`, `HAVING`, or `ORDER BY`, where databases read it differently
+    or a reader could; each asks for an `AS`. Subqueries and queries
+    after `INSERT` aren't named, since nothing reads their names (a
+    subquery in `FROM` still needs an alias for each expression).
 
 ### The tour (2026-11-10)
 
