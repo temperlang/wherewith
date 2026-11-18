@@ -431,11 +431,8 @@ A join, if one is next.
         if (p.isKeyword(p.peek(), "nulls")) {
           p.advance();
           let w = p.peek();
-          // Nested, since Temper doesn't narrow through `&&` into a branch.
           var word = "";
-          if (w != null) {
-            if (w.kind == tokenWord) { word = w.word; }
-          }
+          if (w != null && w.kind == tokenWord) { word = w.word; }
           if (word == "first") {
             nullsFirst = true;
           } else if (word == "last") {
@@ -2370,8 +2367,7 @@ with the problem, if any, that kept it from being written.
         let printer = new CommonPrinter(lexer, !common);
         if (!common) { printer.target = commonTarget(dialect); }
         printer.values = holes;
-        // `?? panic()`, since Temper doesn't narrow after an early return.
-        let printed = printer.printStatement(s ?? panic());
+        let printed = printer.printStatement(s);
         var text = new StringBuilder();
         let runs = printed.runs;
         for (var i = 0; i < runs.length; i += 1) {

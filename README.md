@@ -97,8 +97,10 @@ common dialect's shared corpus (`common_corpus.py`): the same queries,
 rendered for that engine, giving the same rows, but where the design
 documents a difference, and random ones checked against SQLite.
 
-CI runs the tests on every backend for pull requests and pushes to
-`main`, using Temper's nightly `dev` build, and the round trips with
+CI runs the tests on the interpreter and every backend for pull
+requests and pushes to `main`, with Temper's new compiler built from a
+pinned commit (`TEMPEST_COMMIT` in `.github/workflows/test.yml`), and
+the round trips with
 Python 3.11: SQLite and DuckDB in the `py` job, and PostgreSQL,
 MariaDB, and MySQL as service containers in the `engines` job. Source
 files in `src/` are literate Markdown: `core.temper.md` has what every dialect
